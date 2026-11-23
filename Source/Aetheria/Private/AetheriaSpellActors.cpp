@@ -1,8 +1,11 @@
 ﻿#include "AetheriaSpellActors.h"
 #include "AetheriaMaterialLibrary.h"
+#include "AetheriaPackVFX.h"
 #include "Net/UnrealNetwork.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "Engine/StaticMeshActor.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Engine/World.h"
 #include "Engine/OverlapResult.h"
@@ -105,6 +108,115 @@ static void AddNearbyWizardsCameraTrauma(UWorld* World, const FVector& Epicenter
 		}
 	}
 #endif
+}
+
+static bool IsValidSingularityVictim(
+	AActor* Victim,
+	const AActor* SpellZone,
+	const AActor* InstigatorWizard,
+	bool bSpellIsEnemy,
+	const UWorld* World,
+	AAetheriaMobCharacter*& OutMob,
+	AAetheriaWizardCharacter*& OutWiz)
+{
+	OutMob = nullptr;
+	OutWiz = nullptr;
+	if (!IsValid(Victim) || Victim->IsActorBeingDestroyed() || Victim == SpellZone || Victim == InstigatorWizard)
+	{
+		return false;
+	}
+	// Hard architectural safety guard: NEVER move static world geometry, buildings, walls, gates, or props!
+	if (Victim->IsA<AStaticMeshActor>() || !Victim->IsA<ACharacter>())
+	{
+		return false;
+	}
+#if HAS_MOB_CHARACTER
+	if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
+	{
+		if (Mob->HP <= 0.0f)
+		{
+			return false;
+		}
+		OutMob = Mob;
+		return true;
+	}
+#endif
+#if HAS_WIZARD_CHARACTER
+	if (AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(Victim))
+	{
+		if (!Wiz->bIsAlive || Wiz->HP <= 0.0f)
+		{
+			return false;
+		}
+		bool bCanAffectWizard = bSpellIsEnemy;
+		if (!bCanAffectWizard && World)
+		{
+			if (const AAetheriaGameState* GS = World->GetGameState<AAetheriaGameState>())
+			{
+				bCanAffectWizard = (GS->GetEffectiveFriendlyFireScale() > 0.0f);
+			}
+		}
+		if (bCanAffectWizard)
+		{
+			OutWiz = Wiz;
+			return true;
+		}
+		return false;
+	}
+#endif
+	return false;
+}
+
+static UMaterialInstanceDynamic* CreateGargantuaHorizonMID(
+	UObject* Outer,
+	const FLinearColor& CoreColor,
+	const FLinearColor& MidColor,
+	const FLinearColor& OuterColor,
+	float Boost,
+	float Exponent = 5.5f)
+{
+	UMaterialInterface* Base = UAetheriaMaterialLibrary::GetBlackHoleHorizonMaterial(Outer);
+	if (!Base) return nullptr;
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Base, Outer);
+	if (MID)
+	{
+		// New Gargantua multi-band parameters
+		MID->SetVectorParameterValue(FName("RingCoreColor"), CoreColor);
+		MID->SetVectorParameterValue(FName("RingMidColor"), MidColor);
+		MID->SetVectorParameterValue(FName("RingOuterColor"), OuterColor);
+		MID->SetScalarParameterValue(FName("PhotonRingExponent"), Exponent);
+		// Legacy parameter names kept in sync for backward compatibility
+		MID->SetVectorParameterValue(FName("EmissiveColor"), MidColor);
+		MID->SetVectorParameterValue(FName("AccentColor"), CoreColor);
+		MID->SetScalarParameterValue(FName("EmissiveBoost"), Boost);
+	}
+	return MID;
+}
+
+static UMaterialInstanceDynamic* CreateGargantuaDiskMID(
+	UObject* Outer,
+	const FLinearColor& InnerColor,
+	const FLinearColor& MidColor,
+	const FLinearColor& OuterColor,
+	float Boost,
+	float KeplerOmega = 2.6f)
+{
+	UMaterialInterface* Base = UAetheriaMaterialLibrary::GetAccretionDiskMaterial(Outer);
+	if (!Base) return nullptr;
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Base, Outer);
+	if (MID)
+	{
+		// New Gargantua Keplerian parameters
+		MID->SetVectorParameterValue(FName("DiskInnerColor"), InnerColor);
+		MID->SetVectorParameterValue(FName("DiskMidColor"), MidColor);
+		MID->SetVectorParameterValue(FName("DiskOuterColor"), OuterColor);
+		MID->SetScalarParameterValue(FName("KeplerOmega"), KeplerOmega);
+		// Legacy parameter names kept in sync for backward compatibility
+		MID->SetVectorParameterValue(FName("EmissiveColor"), MidColor);
+		MID->SetVectorParameterValue(FName("AccentColor"), OuterColor);
+		MID->SetScalarParameterValue(FName("EmissiveBoost"), Boost);
+	}
+	return MID;
 }
 
 static void DealDamageToMobOrActor(AActor* Target, float Amount, AActor* InstigatorWizard, bool bIgnite = false, float StunDuration = 0.0f)
@@ -602,6 +714,8 @@ void AAetheriaSpellProjectile::Detonate()
 	const FVector BoomLoc = GetActorLocation();
 	UWorld* World = GetWorld();
 
+	UAetheriaPackVFX::PlayHit(World, BoomLoc, SpellId);
+
 	// Dual chromatic explosion shockwaves + radial lightning sparks for Fireball
 	AAetheriaLightningArcVFX::SpawnShockwaveRing(World, BoomLoc, RadiusUU * 1.65f, PrimaryColor, 0.48f);
 	AAetheriaLightningArcVFX::SpawnShockwaveRing(World, BoomLoc, RadiusUU * 1.05f, AccentColor, 0.36f);
@@ -787,7 +901,8 @@ void AAetheriaSpellZone::InitializeZone(
 		CastDirection = FVector::ForwardVector;
 	}
 	RadiusUU = InRadiusUU;
-	Duration = InDuration;
+	// Dota 2 Invoker Chaos Meteor: 1.0s blazing diagonal sky plunge + 3.0s rolling molten boulder (~1050uu)
+	Duration = (SpellId == EAetheriaSpellId::ChaosMeteor) ? FMath::Max(InDuration, 4.0f) : InDuration;
 	TickDamage = InTickDamage;
 	PrimaryColor = InPrimaryColor;
 	AccentColor = InAccentColor;
@@ -882,20 +997,25 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 	{
 	case EAetheriaSpellId::BlackHole:
 	{
-		const FVector HorizonOffset(0.0f, 0.0f, 55.0f);
-		const float AccretionBoost = bSolarSingularityIgnited ? 12.0f : 9.5f;
-		const FLinearColor AccretionInner = bSolarSingularityIgnited ? AetheriaMindColors::IgnisPlasma : FLinearColor(1.0f, 0.56f, 0.20f, 1.0f);
-		const FLinearColor AccretionOuter = bSolarSingularityIgnited ? FLinearColor(1.0f, 0.22f, 0.05f, 1.0f) : AetheriaMindColors::MindViolet;
+		// Real Interstellar Gargantua Black Hole floating above arena so it reads unmistakably from ARPG top-down camera
+		const FVector HorizonOffset(0.0f, 0.0f, 95.0f);
+		const float HorizonBoost = bSolarSingularityIgnited ? 18.0f : 15.0f;
+		const float AccretionBoost = bSolarSingularityIgnited ? 20.0f : 16.5f;
+		const FLinearColor PhotonCore = FLinearColor(1.00f, 0.96f, 0.80f, 1.0f);   // blazing white-gold photon sphere
+		const FLinearColor PhotonMid = bSolarSingularityIgnited ? FLinearColor(1.00f, 0.48f, 0.06f, 1.0f) : FLinearColor(1.00f, 0.56f, 0.12f, 1.0f); // amber-orange
+		const FLinearColor PhotonOuter = bSolarSingularityIgnited ? FLinearColor(0.85f, 0.14f, 0.04f, 1.0f) : FLinearColor(0.36f, 0.06f, 0.62f, 1.0f); // deep violet redshift
 
-		// 1. Schwarzschild Pitch-Black Event Horizon + Sharp Photon Ring (compact readable cosmic core)
+		const FLinearColor DiskInner = FLinearColor(1.00f, 0.94f, 0.72f, 1.0f);    // incandescent white-gold ISCO
+		const FLinearColor DiskMid = bSolarSingularityIgnited ? FLinearColor(1.00f, 0.36f, 0.04f, 1.0f) : FLinearColor(1.00f, 0.44f, 0.07f, 1.0f);  // fiery Gargantua amber-orange
+		const FLinearColor DiskOuter = bSolarSingularityIgnited ? FLinearColor(0.75f, 0.08f, 0.02f, 1.0f) : FLinearColor(0.42f, 0.06f, 0.36f, 1.0f); // crimson-violet wisps
+
+		// 1. Pure Pitch-Black (#000000) Spherical Event Horizon Core + Razor Fresnel^5.5 Photon Ring
 		if (DomeMesh)
 		{
 			DomeMesh->SetStaticMesh(GEngineSphereMesh);
 			DomeMesh->SetRelativeLocation(HorizonOffset);
-			DomeMesh->SetRelativeScale3D(FVector(SphereScale * 0.18f));
-			if (UMaterialInstanceDynamic* HorizonMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
-				this, UAetheriaMaterialLibrary::GetBlackHoleHorizonMaterial(this),
-				AetheriaMindColors::MindViolet, FLinearColor(0.92f, 0.98f, 1.0f, 1.0f), 10.0f, 1.0f))
+			DomeMesh->SetRelativeScale3D(FVector(SphereScale * 0.24f));
+			if (UMaterialInstanceDynamic* HorizonMat = CreateGargantuaHorizonMID(this, PhotonCore, PhotonMid, PhotonOuter, HorizonBoost, 5.5f))
 			{
 				DomeMesh->SetMaterial(0, HorizonMat);
 			}
@@ -905,54 +1025,58 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 			}
 		}
 
-		// 2. Equatorial Relativistic Accretion Disk (Hollow UV disk with ISCO & Doppler beaming)
+		// 2. Equatorial Keplerian Differentially-Rotating Accretion Disk (tilted to read dramatically from isometric camera)
 		if (SecondaryMesh)
 		{
 			SecondaryMesh->SetStaticMesh(GEnginePlaneMesh);
 			SecondaryMesh->SetRelativeLocation(HorizonOffset);
-			SecondaryMesh->SetRelativeRotation(FRotator(16.0f, 0.0f, 12.0f));
-			SecondaryMesh->SetRelativeScale3D(FVector(SphereScale * 1.50f, SphereScale * 1.50f, 1.0f));
-			if (UMaterialInstanceDynamic* DiskMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
-				this, UAetheriaMaterialLibrary::GetAccretionDiskMaterial(this),
-				AccretionInner, AccretionOuter, AccretionBoost, 1.0f))
+			SecondaryMesh->SetRelativeRotation(FRotator(24.0f, 0.0f, 18.0f));
+			SecondaryMesh->SetRelativeScale3D(FVector(SphereScale * 1.95f, SphereScale * 1.95f, 1.0f));
+			if (UMaterialInstanceDynamic* DiskMat = CreateGargantuaDiskMID(this, DiskInner, DiskMid, DiskOuter, AccretionBoost, bSolarSingularityIgnited ? 3.4f : 2.6f))
 			{
 				SecondaryMesh->SetMaterial(0, DiskMat);
 			}
 		}
 
-		// 3. Gravitational Lensing Einstein Halo Arch (vertical bent disk light like Gargantua)
+		// 3. Upper/Lower Gravitational-Lensing Einstein Halo Arch (light bent vertically over the Gargantua event horizon!)
 		if (RingMeshA)
 		{
 			RingMeshA->SetStaticMesh(GEnginePlaneMesh);
 			RingMeshA->SetVisibility(true);
 			RingMeshA->SetRelativeLocation(HorizonOffset);
-			RingMeshA->SetRelativeRotation(FRotator(84.0f, -14.0f, 8.0f));
-			RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.15f, SphereScale * 1.15f, 1.0f));
-			if (UMaterialInstanceDynamic* LensMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
-				this, UAetheriaMaterialLibrary::GetAccretionDiskMaterial(this),
-				FLinearColor(0.88f, 0.94f, 1.0f, 1.0f), AetheriaMindColors::MindViolet, 8.5f, 1.0f))
+			RingMeshA->SetRelativeRotation(FRotator(78.0f, -18.0f, 12.0f));
+			RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.48f, SphereScale * 1.48f, 1.0f));
+			if (UMaterialInstanceDynamic* LensMat = CreateGargantuaDiskMID(this, PhotonCore, PhotonMid, PhotonOuter, 13.5f, 2.2f))
 			{
 				RingMeshA->SetMaterial(0, LensMat);
 			}
 		}
 
-		// 4. Keep outer sphere distortion shell hidden so nothing obscures view of the singularity core
+		// 4. Secondary Counter-Tilted Lensing Arc so the Gargantua halo reads in 3D from every camera orbit angle
 		if (RingMeshB)
 		{
-			RingMeshB->SetVisibility(false);
+			RingMeshB->SetStaticMesh(GEnginePlaneMesh);
+			RingMeshB->SetVisibility(true);
+			RingMeshB->SetRelativeLocation(HorizonOffset);
+			RingMeshB->SetRelativeRotation(FRotator(-62.0f, 28.0f, -15.0f));
+			RingMeshB->SetRelativeScale3D(FVector(SphereScale * 1.24f, SphereScale * 1.24f, 1.0f));
+			if (UMaterialInstanceDynamic* CounterLensMat = CreateGargantuaDiskMID(this, PhotonCore, FLinearColor(0.95f, 0.45f, 0.14f, 1.0f), PhotonOuter, 7.5f, -1.9f))
+			{
+				RingMeshB->SetMaterial(0, CounterLensMat);
+			}
 		}
 
-		// 5. Bi-Directional Relativistic Polar Astrophysical Jets
+		// 5. Slim Relativistic Polar Astrophysical Jets
 		if (TertiaryMesh)
 		{
 			TertiaryMesh->SetStaticMesh(GEngineCylinderMesh);
 			TertiaryMesh->SetVisibility(true);
 			TertiaryMesh->SetRelativeLocation(HorizonOffset);
-			TertiaryMesh->SetRelativeRotation(FRotator(16.0f, 0.0f, 12.0f));
-			TertiaryMesh->SetRelativeScale3D(FVector(0.18f, 0.18f, SphereScale * 1.10f));
+			TertiaryMesh->SetRelativeRotation(FRotator(24.0f, 0.0f, 18.0f));
+			TertiaryMesh->SetRelativeScale3D(FVector(0.11f, 0.11f, SphereScale * 0.92f));
 			if (UMaterialInstanceDynamic* JetMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetSolarBeamMaterial(this),
-				AetheriaMindColors::MindCyan, AetheriaMindColors::MindViolet, 9.0f, 1.0f))
+				FLinearColor(1.0f, 0.72f, 0.30f, 1.0f), AetheriaMindColors::MindViolet, 7.5f, 0.85f))
 			{
 				TertiaryMesh->SetMaterial(0, JetMat);
 			}
@@ -962,23 +1086,23 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 		if (GroundSealMesh)
 		{
 			GroundSealMesh->SetVisibility(true);
-			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 5.0f));
-			GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 1.42f, SphereScale * 1.42f, 1.0f));
+			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 6.0f));
+			GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 1.55f, SphereScale * 1.55f, 1.0f));
 			if (UMaterialInstanceDynamic* GravSealMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
-				AetheriaMindColors::MindViolet, AetheriaMindColors::MindCyan, 5.2f, 0.88f))
+				FLinearColor(1.0f, 0.56f, 0.16f, 1.0f), AetheriaMindColors::MindViolet, 5.5f, 0.90f))
 			{
 				GroundSealMesh->SetMaterial(0, GravSealMat);
 			}
 		}
 
-		// 7. 56 Relativistic Star-Matter & Plasma Filaments spiraling inward from 1.25R -> horizon
+		// 7. 56 Relativistic Star-Matter & Golden Plasma Filaments spiraling inward from 1.25R -> horizon
 		if (InstancedFX)
 		{
 			InstancedFX->SetStaticMesh(GEngineSphereMesh);
 			if (UMaterialInstanceDynamic* StarFXMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(this),
-				FLinearColor(0.95f, 0.72f, 1.0f, 1.0f), AetheriaMindColors::MindCyan, 4.5f, 1.0f))
+				FLinearColor(1.0f, 0.82f, 0.42f, 1.0f), FLinearColor(1.0f, 0.48f, 0.12f, 1.0f), 6.2f, 1.0f))
 			{
 				InstancedFX->SetMaterial(0, StarFXMat);
 			}
@@ -992,20 +1116,20 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 			}
 		}
 
-		// 8. 28 Torn Landscape Slabs & Arena Boulders ripped out of floor, spaghettified and swallowed
+		// 8. 28 Local Procedural Cosmological Debris Shards (purely cosmetic, NEVER rips world buildings/ISMs!)
 		if (TerrainDebrisISM)
 		{
 			UStaticMesh* BoulderMesh = UAetheriaMaterialLibrary::LoadCustomOrFallbackMesh(TEXT("SM_CliffBoulder"), TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 			TerrainDebrisISM->SetStaticMesh(BoulderMesh);
 			if (UMaterialInstanceDynamic* TerrainSlabMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetBiomeFloorMaterial(LocIdx, this),
-				FLinearColor(0.84f, 0.86f, 0.94f, 1.0f), AetheriaMindColors::MindViolet, 3.2f, 1.0f))
+				FLinearColor(0.84f, 0.86f, 0.94f, 1.0f), FLinearColor(1.0f, 0.48f, 0.12f, 1.0f), 3.6f, 1.0f))
 			{
 				TerrainDebrisISM->SetMaterial(0, TerrainSlabMat);
 			}
 
 			const float NormUnit = GetNormalizedUnitMeshScale(BoulderMesh);
-			bExtractedBiomeProps = false;
+			bExtractedBiomeProps = true; // Never extract or touch world biome ISMs
 			for (int32 i = 0; i < 28; ++i)
 			{
 				FAetheriaAbsorbedChunk Chunk;
@@ -1013,7 +1137,7 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 				Chunk.StartRadius = FMath::FRandRange(RadiusUU * 0.62f, RadiusUU * 1.32f);
 				Chunk.CurrentRadius = Chunk.StartRadius;
 				Chunk.CurrentZ = 4.0f;
-				Chunk.BaseScale = NormUnit * FMath::FRandRange(0.28f, 0.62f);
+				Chunk.BaseScale = NormUnit * FMath::FRandRange(0.24f, 0.52f);
 				Chunk.TumbleRot = FRotator(FMath::FRandRange(0.0f, 360.0f), FMath::FRandRange(0.0f, 360.0f), FMath::FRandRange(0.0f, 360.0f));
 				Chunk.bActive = true;
 				MatterChunks.Add(Chunk);
@@ -1023,11 +1147,21 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 			}
 		}
 
+		// 9. Layer Verified Fab Gravitational Distortion + ParagonGideon Ultimate Dark-Matter Swirl!
+		if (UWorld* World = GetWorld())
+		{
+			const FVector SingularityWorld = GetActorLocation() + HorizonOffset;
+			const float VfxLife = FMath::Max(2.5f, Duration);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Vefects/VFX_Distortion/VFX/Particles/NS_Distortion_Flat_05"), SingularityWorld, FRotator::ZeroRotator, FVector(2.8f), true, VfxLife);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/ParagonGideon/FX/Particles/Gideon/Abilities/Ultimate/FX/P_Gideon_Ultimate"), SingularityWorld, FRotator::ZeroRotator, FVector(1.05f), true, VfxLife);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Aura_Soul"), GetActorLocation() + FVector(0.0f, 0.0f, 12.0f), FRotator::ZeroRotator, FVector(2.1f), true, VfxLife);
+		}
+
 		if (ZoneLight)
 		{
-			ZoneLight->SetLightColor(AetheriaMindColors::MindViolet);
-			ZoneLight->Intensity = 9500.0f;
-			ZoneLight->AttenuationRadius = RadiusUU * 2.2f;
+			ZoneLight->SetLightColor(FLinearColor(1.0f, 0.54f, 0.16f, 1.0f));
+			ZoneLight->Intensity = 12500.0f;
+			ZoneLight->AttenuationRadius = RadiusUU * 2.4f;
 		}
 		break;
 	}
@@ -1120,48 +1254,49 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 
 	case EAetheriaSpellId::ChaosMeteor:
 	{
-		const FVector Fwd2D = CastDirection.GetSafeNormal2D();
-		const FVector SkyOffset = -Fwd2D * 920.0f + FVector(0.0f, 0.0f, 1480.0f);
-		const FVector EntryDir = (-SkyOffset + FVector(0.0f, 0.0f, RadiusUU * 0.40f)).GetSafeNormal();
+		// Unmistakable Dota 2 Invoker Chaos Meteor: ~55 deg diagonal plunge from 1400uu skyward -> impact slam -> 3.0s rolling flaming boulder!
+		const FVector Fwd2D = CastDirection.GetSafeNormal2D().IsNearlyZero() ? FVector::ForwardVector : CastDirection.GetSafeNormal2D();
+		const FVector SkyOffset = -Fwd2D * 980.0f + FVector(0.0f, 0.0f, 1400.0f);
+		const FVector EntryDir = (-SkyOffset + FVector(0.0f, 0.0f, 85.0f)).GetSafeNormal();
 		const FRotator PortalFacingRot = EntryDir.Rotation() + FRotator(90.0f, 0.0f, 0.0f);
 
-		// 1. Molten Obsidian Asteroid Core
+		// 1. Massive ~170cm Diameter Magma-Cracked Molten Boulder Core
 		UStaticMesh* BoulderMesh = UAetheriaMaterialLibrary::LoadCustomOrFallbackMesh(TEXT("SM_CliffBoulder"), TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 		const float CoreNorm = GetNormalizedUnitMeshScale(BoulderMesh);
 		if (DomeMesh)
 		{
 			DomeMesh->SetStaticMesh(BoulderMesh ? BoulderMesh : GEngineSphereMesh);
 			DomeMesh->SetRelativeLocation(SkyOffset);
-			DomeMesh->SetRelativeScale3D(FVector(SphereScale * 0.68f * CoreNorm));
+			DomeMesh->SetRelativeScale3D(FVector(1.70f * CoreNorm)); // ~170cm diameter molten boulder
 			DomeMesh->SetMaterial(0, UAetheriaMaterialLibrary::GetFireballMaterial(this));
 		}
 
-		// 2. Atmospheric Plasma Mach Corona Shell
+		// 2. Blazing Atmospheric Plasma Corona Shell hugging the molten boulder
 		if (TertiaryMesh)
 		{
 			TertiaryMesh->SetStaticMesh(GEngineSphereMesh);
 			TertiaryMesh->SetVisibility(true);
 			TertiaryMesh->SetRelativeLocation(SkyOffset);
 			TertiaryMesh->SetRelativeRotation(EntryDir.Rotation());
-			TertiaryMesh->SetRelativeScale3D(FVector(SphereScale * 1.15f, SphereScale * 0.86f, SphereScale * 0.86f));
+			TertiaryMesh->SetRelativeScale3D(FVector(2.35f, 1.95f, 1.95f));
 			if (UMaterialInstanceDynamic* CoronaMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(this),
-				AetheriaMindColors::IgnisPlasma, AetheriaMindColors::MindViolet, 4.8f, 0.52f))
+				AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.78f, 0.22f, 1.0f), 6.2f, 0.48f))
 			{
 				TertiaryMesh->SetMaterial(0, CoronaMat);
 			}
 		}
 
-		// 3. Celestial Tear Sky Rift Portal (2 counter-rotating rings tilted along entry trajectory)
+		// 3. Celestial Tear Sky Rift Portal (2 counter-rotating rings tilted along 55 deg entry trajectory)
 		if (SecondaryMesh)
 		{
 			SecondaryMesh->SetStaticMesh(GEnginePlaneMesh);
 			SecondaryMesh->SetRelativeLocation(SkyOffset);
 			SecondaryMesh->SetRelativeRotation(PortalFacingRot);
-			SecondaryMesh->SetRelativeScale3D(FVector(SphereScale * 2.55f, SphereScale * 2.55f, 1.0f));
+			SecondaryMesh->SetRelativeScale3D(FVector(SphereScale * 2.35f, SphereScale * 2.35f, 1.0f));
 			if (UMaterialInstanceDynamic* SkyPortalMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
-				AetheriaMindColors::IgnisPlasma, AetheriaMindColors::MindViolet, 8.5f, 0.96f))
+				AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.65f, 0.14f, 1.0f), 8.5f, 0.96f))
 			{
 				SecondaryMesh->SetMaterial(0, SkyPortalMat);
 			}
@@ -1172,24 +1307,24 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 			RingMeshA->SetVisibility(true);
 			RingMeshA->SetRelativeLocation(SkyOffset);
 			RingMeshA->SetRelativeRotation(PortalFacingRot + FRotator(0.0f, 45.0f, 0.0f));
-			RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.90f, SphereScale * 1.90f, 1.0f));
+			RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.75f, SphereScale * 1.75f, 1.0f));
 			if (UMaterialInstanceDynamic* InnerPortalMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
-				AetheriaMindColors::MindViolet, AetheriaMindColors::IgnisPlasma, 7.5f, 0.90f))
+				FLinearColor(1.0f, 0.85f, 0.35f, 1.0f), AetheriaMindColors::IgnisPlasma, 7.8f, 0.90f))
 			{
 				RingMeshA->SetMaterial(0, InnerPortalMat);
 			}
 		}
 
-		// 4. Pre-Impact Ground Targeting & Crater Seals
+		// 4. Phase 1 Blazing Runic Landing Target Circle & Inner Ring
 		if (GroundSealMesh)
 		{
 			GroundSealMesh->SetVisibility(true);
-			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 5.0f));
-			GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 2.15f, SphereScale * 2.15f, 1.0f));
+			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 6.0f));
+			GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 2.05f, SphereScale * 2.05f, 1.0f));
 			if (UMaterialInstanceDynamic* CraterSealMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
-				AetheriaMindColors::IgnisPlasma, AetheriaMindColors::MindViolet, 6.2f, 0.94f))
+				AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.60f, 0.12f, 1.0f), 7.2f, 0.94f))
 			{
 				GroundSealMesh->SetMaterial(0, CraterSealMat);
 			}
@@ -1198,23 +1333,32 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 		{
 			RingMeshB->SetStaticMesh(GEnginePlaneMesh);
 			RingMeshB->SetVisibility(true);
-			RingMeshB->SetRelativeLocation(FVector(0.0f, 0.0f, 8.0f));
-			RingMeshB->SetRelativeScale3D(FVector(SphereScale * 1.45f, SphereScale * 1.45f, 1.0f));
+			RingMeshB->SetRelativeLocation(FVector(0.0f, 0.0f, 9.0f));
+			RingMeshB->SetRelativeScale3D(FVector(SphereScale * 0.45f, SphereScale * 0.45f, 1.0f));
 			if (UMaterialInstanceDynamic* InnerTargetMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
-				FLinearColor(1.0f, 0.85f, 0.35f, 1.0f), AetheriaMindColors::IgnisPlasma, 7.0f, 0.90f))
+				FLinearColor(1.0f, 0.88f, 0.38f, 1.0f), AetheriaMindColors::IgnisPlasma, 7.6f, 0.92f))
 			{
 				RingMeshB->SetMaterial(0, InnerTargetMat);
 			}
 		}
 
-		// 5. 36 Atmospheric Plasma Plume & Burning Wake Fireballs
+		// 5. Phase 1 Verified Fab Ground Runic Telegraph + Fiery Aura + Sky Portal VFX
+		if (UWorld* World = GetWorld())
+		{
+			const FVector GroundCenter = GetActorLocation() + FVector(0.0f, 0.0f, 8.0f);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Circle"), GroundCenter, FRotator::ZeroRotator, FVector(2.25f), true, 1.25f);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Aura_Fire"), GroundCenter, FRotator::ZeroRotator, FVector(2.10f), true, 1.25f);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/ParagonGideon/FX/Particles/Gideon/Abilities/Meteor/FX/P_Gideon_Meteor_Portal"), GetActorLocation() + SkyOffset, PortalFacingRot, FVector(1.55f), true, 1.35f);
+		}
+
+		// 6. 36 Atmospheric Plasma Plume & Burning Wake Fireballs
 		if (PlasmaTrailISM)
 		{
 			PlasmaTrailISM->SetStaticMesh(GEngineSphereMesh);
 			if (UMaterialInstanceDynamic* PlumeMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 				this, UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(this),
-				AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.82f, 0.25f, 1.0f), 5.2f, 0.92f))
+				AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.82f, 0.25f, 1.0f), 5.6f, 0.92f))
 			{
 				PlasmaTrailISM->SetMaterial(0, PlumeMat);
 			}
@@ -1224,7 +1368,7 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 			}
 		}
 
-		// 6. 10 Ballistic Molten Shrapnel Boulders + 24 Persistent Burning Magma Furrow Slabs
+		// 7. 10 Ballistic Molten Shrapnel Boulders + 24 Persistent Burning Magma Furrow Slabs
 		if (TerrainDebrisISM)
 		{
 			TerrainDebrisISM->SetStaticMesh(BoulderMesh ? BoulderMesh : GEngineSphereMesh);
@@ -1243,12 +1387,16 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 		if (ZoneLight)
 		{
 			ZoneLight->SetLightColor(AetheriaMindColors::IgnisPlasma);
-			ZoneLight->Intensity = 12000.0f;
-			ZoneLight->AttenuationRadius = RadiusUU * 2.4f;
+			ZoneLight->Intensity = 13500.0f;
+			ZoneLight->AttenuationRadius = RadiusUU * 2.5f;
 		}
 		MeteorSpinQuat = FQuat::Identity;
+		bMeteorLanded = false;
 		bMeteorFinalEruption = false;
 		NextFurrowDist = 0.0f;
+		NextFireTrailVfxDist = 0.0f;
+		PlungeTrailVfxCooldown = 0.0f;
+		FireTrailVfxStep = 0;
 		break;
 	}
 
@@ -1621,6 +1769,374 @@ void AAetheriaSpellZone::SetupMeshesForSpell()
 		break;
 	}
 
+	case EAetheriaSpellId::Macropyre:
+	{
+		const FRotator DirRot = CastDirection.Rotation();
+		if (DomeMesh) DomeMesh->SetVisibility(false);
+		if (SecondaryMesh)
+		{
+			SecondaryMesh->SetStaticMesh(GEngineCylinderMesh);
+			SecondaryMesh->SetVisibility(true);
+			SecondaryMesh->SetRelativeLocation(CastDirection * 950.0f + FVector(0.0f, 0.0f, 10.0f));
+			SecondaryMesh->SetRelativeRotation(DirRot + FRotator(90.0f, 0.0f, 0.0f));
+			SecondaryMesh->SetRelativeScale3D(FVector(1.85f, 1.85f, 19.5f));
+			if (UMaterialInstanceDynamic* MagmaStreamMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetFireballMaterial(this),
+				PrimaryColor, AccentColor, 10.0f, 1.0f))
+			{
+				SecondaryMesh->SetMaterial(0, MagmaStreamMat);
+			}
+		}
+		if (TertiaryMesh) TertiaryMesh->SetVisibility(false);
+		if (GroundSealMesh)
+		{
+			GroundSealMesh->SetVisibility(true);
+			GroundSealMesh->SetRelativeLocation(CastDirection * 950.0f + FVector(0.0f, 0.0f, 5.0f));
+			GroundSealMesh->SetRelativeRotation(DirRot);
+			GroundSealMesh->SetRelativeScale3D(FVector(20.0f, 4.2f, 1.0f));
+			if (UMaterialInstanceDynamic* CorridorMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				PrimaryColor, AccentColor, 7.0f, 0.92f))
+			{
+				GroundSealMesh->SetMaterial(0, CorridorMat);
+			}
+		}
+		if (InstancedFX)
+		{
+			InstancedFX->SetStaticMesh(GEngineSphereMesh);
+			if (UMaterialInstanceDynamic* EmberMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(this),
+				PrimaryColor, AccentColor, 7.5f, 1.0f))
+			{
+				InstancedFX->SetMaterial(0, EmberMat);
+			}
+			const FVector Right = FVector::CrossProduct(FVector::UpVector, CastDirection).GetSafeNormal();
+			for (int32 i = 0; i < 28; ++i)
+			{
+				const float Along = (static_cast<float>(i) / 27.0f) * 1900.0f + 60.0f;
+				const float Side = FMath::FRandRange(-160.0f, 160.0f);
+				const FVector Pos = CastDirection * Along + Right * Side + FVector(0.0f, 0.0f, FMath::FRandRange(16.0f, 70.0f));
+				StarFilamentParams.Add(Pos);
+				InstancedFX->AddInstance(FTransform(FRotator::ZeroRotator, Pos, FVector(0.24f)));
+			}
+		}
+		if (ZoneLight)
+		{
+			ZoneLight->SetLightColor(PrimaryColor);
+			ZoneLight->Intensity = 9500.0f;
+		}
+		break;
+	}
+
+	case EAetheriaSpellId::PlasmaField:
+	{
+		if (DomeMesh)
+		{
+			DomeMesh->SetStaticMesh(GEngineSphereMesh);
+			DomeMesh->SetVisibility(true);
+			DomeMesh->SetRelativeScale3D(FVector(1.5f));
+			if (UMaterialInstanceDynamic* FieldMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetChronosphereDomeMaterial(this),
+				PrimaryColor, AccentColor, 6.0f, 0.25f))
+			{
+				DomeMesh->SetMaterial(0, FieldMat);
+			}
+		}
+		if (SecondaryMesh) SecondaryMesh->SetVisibility(false);
+		if (TertiaryMesh) TertiaryMesh->SetVisibility(false);
+		if (GroundSealMesh)
+		{
+			GroundSealMesh->SetVisibility(true);
+			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 6.0f));
+			GroundSealMesh->SetRelativeScale3D(FVector(2.0f, 2.0f, 1.0f));
+			if (UMaterialInstanceDynamic* RingMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				PrimaryColor, AccentColor, 9.0f, 0.95f))
+			{
+				GroundSealMesh->SetMaterial(0, RingMat);
+			}
+		}
+		if (RingMeshA)
+		{
+			RingMeshA->SetStaticMesh(GEnginePlaneMesh);
+			RingMeshA->SetVisibility(true);
+			RingMeshA->SetRelativeLocation(FVector(0.0f, 0.0f, 28.0f));
+			RingMeshA->SetRelativeScale3D(FVector(2.0f, 2.0f, 1.0f));
+			if (UMaterialInstanceDynamic* PlasmaRingMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				AccentColor, PrimaryColor, 10.0f, 0.92f))
+			{
+				RingMeshA->SetMaterial(0, PlasmaRingMat);
+			}
+		}
+		if (InstancedFX)
+		{
+			InstancedFX->SetStaticMesh(GEngineSphereMesh);
+			if (UMaterialInstanceDynamic* SparkMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(this),
+				PrimaryColor, AccentColor, 6.5f, 1.0f))
+			{
+				InstancedFX->SetMaterial(0, SparkMat);
+			}
+			for (int32 i = 0; i < 32; ++i)
+			{
+				const float Ang = (static_cast<float>(i) / 32.0f) * TWO_PI;
+				StarFilamentParams.Add(FVector(Ang, 0.0f, 0.0f));
+				InstancedFX->AddInstance(FTransform(FRotator::ZeroRotator, FVector(FMath::Cos(Ang) * 120.0f, FMath::Sin(Ang) * 120.0f, 36.0f), FVector(0.16f)));
+			}
+		}
+		if (ZoneLight)
+		{
+			ZoneLight->SetLightColor(PrimaryColor);
+			ZoneLight->Intensity = 9500.0f;
+		}
+		break;
+	}
+
+	case EAetheriaSpellId::CataclysmNova:
+	{
+		if (DomeMesh)
+		{
+			DomeMesh->SetStaticMesh(GEngineSphereMesh);
+			DomeMesh->SetVisibility(true);
+			DomeMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 60.0f));
+			DomeMesh->SetRelativeScale3D(FVector(SphereScale * 0.35f));
+			if (UMaterialInstanceDynamic* CoreMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetFireballMaterial(this),
+				PrimaryColor, AccentColor, 11.0f, 1.0f))
+			{
+				DomeMesh->SetMaterial(0, CoreMat);
+			}
+		}
+		if (SecondaryMesh) SecondaryMesh->SetVisibility(false);
+		if (TertiaryMesh) TertiaryMesh->SetVisibility(false);
+		if (GroundSealMesh)
+		{
+			GroundSealMesh->SetVisibility(true);
+			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 6.0f));
+			GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 2.0f, SphereScale * 2.0f, 1.0f));
+			if (UMaterialInstanceDynamic* SealMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				PrimaryColor, AccentColor, 8.5f, 0.95f))
+			{
+				GroundSealMesh->SetMaterial(0, SealMat);
+			}
+		}
+		if (RingMeshA)
+		{
+			RingMeshA->SetStaticMesh(GEnginePlaneMesh);
+			RingMeshA->SetVisibility(true);
+			RingMeshA->SetRelativeLocation(FVector(0.0f, 0.0f, 55.0f));
+			RingMeshA->SetRelativeRotation(FRotator(24.0f, 0.0f, 0.0f));
+			RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.4f, SphereScale * 1.4f, 1.0f));
+			if (UMaterialInstanceDynamic* RingMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				AccentColor, PrimaryColor, 9.0f, 0.90f))
+			{
+				RingMeshA->SetMaterial(0, RingMat);
+			}
+		}
+		if (ZoneLight)
+		{
+			ZoneLight->SetLightColor(PrimaryColor);
+			ZoneLight->Intensity = 12500.0f;
+		}
+		break;
+	}
+
+	case EAetheriaSpellId::SunStrike:
+	{
+		if (DomeMesh)
+		{
+			DomeMesh->SetStaticMesh(GEngineSphereMesh);
+			DomeMesh->SetVisibility(false);
+			DomeMesh->SetRelativeScale3D(FVector(SphereScale * 0.45f));
+			if (UMaterialInstanceDynamic* FlareMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetFireballMaterial(this),
+				PrimaryColor, AccentColor, 14.0f, 1.0f))
+			{
+				DomeMesh->SetMaterial(0, FlareMat);
+			}
+		}
+		if (SecondaryMesh)
+		{
+			SecondaryMesh->SetStaticMesh(GEngineCylinderMesh);
+			SecondaryMesh->SetVisibility(false);
+			SecondaryMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 1100.0f));
+			SecondaryMesh->SetRelativeScale3D(FVector(SphereScale * 0.45f, SphereScale * 0.45f, 22.0f));
+			if (UMaterialInstanceDynamic* BeamMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetSolarBeamMaterial(this),
+				PrimaryColor, AccentColor, 22.0f, 1.0f))
+			{
+				SecondaryMesh->SetMaterial(0, BeamMat);
+			}
+		}
+		if (TertiaryMesh) TertiaryMesh->SetVisibility(false);
+		if (GroundSealMesh)
+		{
+			GroundSealMesh->SetVisibility(true);
+			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 6.0f));
+			GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 2.0f, SphereScale * 2.0f, 1.0f));
+			if (UMaterialInstanceDynamic* TargetMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				PrimaryColor, AccentColor, 8.0f, 0.96f))
+			{
+				GroundSealMesh->SetMaterial(0, TargetMat);
+			}
+		}
+		if (RingMeshA)
+		{
+			RingMeshA->SetStaticMesh(GEnginePlaneMesh);
+			RingMeshA->SetVisibility(true);
+			RingMeshA->SetRelativeLocation(FVector(0.0f, 0.0f, 12.0f));
+			RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.25f, SphereScale * 1.25f, 1.0f));
+			if (UMaterialInstanceDynamic* InnerMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				AccentColor, PrimaryColor, 9.0f, 0.92f))
+			{
+				RingMeshA->SetMaterial(0, InnerMat);
+			}
+		}
+		if (ZoneLight)
+		{
+			ZoneLight->SetLightColor(PrimaryColor);
+			ZoneLight->Intensity = 11500.0f;
+		}
+		break;
+	}
+
+	case EAetheriaSpellId::EyeOfTheStorm:
+	{
+		if (DomeMesh)
+		{
+			DomeMesh->SetStaticMesh(GEngineSphereMesh);
+			DomeMesh->SetVisibility(true);
+			DomeMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 320.0f));
+			DomeMesh->SetRelativeScale3D(FVector(SphereScale * 0.72f, SphereScale * 0.72f, SphereScale * 0.28f));
+			if (UMaterialInstanceDynamic* CloudMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetChronosphereDomeMaterial(this),
+				PrimaryColor, AccentColor, 5.5f, 0.45f))
+			{
+				DomeMesh->SetMaterial(0, CloudMat);
+			}
+		}
+		if (SecondaryMesh) SecondaryMesh->SetVisibility(false);
+		if (TertiaryMesh) TertiaryMesh->SetVisibility(false);
+		if (RingMeshA)
+		{
+			RingMeshA->SetStaticMesh(GEnginePlaneMesh);
+			RingMeshA->SetVisibility(true);
+			RingMeshA->SetRelativeLocation(FVector(0.0f, 0.0f, 310.0f));
+			RingMeshA->SetRelativeRotation(FRotator(10.0f, 0.0f, 0.0f));
+			RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.35f, SphereScale * 1.35f, 1.0f));
+			if (UMaterialInstanceDynamic* VortexA = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				PrimaryColor, AccentColor, 8.0f, 0.88f))
+			{
+				RingMeshA->SetMaterial(0, VortexA);
+			}
+		}
+		if (RingMeshB)
+		{
+			RingMeshB->SetStaticMesh(GEnginePlaneMesh);
+			RingMeshB->SetVisibility(true);
+			RingMeshB->SetRelativeLocation(FVector(0.0f, 0.0f, 345.0f));
+			RingMeshB->SetRelativeRotation(FRotator(-12.0f, 45.0f, 0.0f));
+			RingMeshB->SetRelativeScale3D(FVector(SphereScale * 0.95f, SphereScale * 0.95f, 1.0f));
+			if (UMaterialInstanceDynamic* VortexB = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				AccentColor, PrimaryColor, 7.5f, 0.85f))
+			{
+				RingMeshB->SetMaterial(0, VortexB);
+			}
+		}
+		if (GroundSealMesh)
+		{
+			GroundSealMesh->SetVisibility(true);
+			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 6.0f));
+			GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 1.85f, SphereScale * 1.85f, 1.0f));
+			if (UMaterialInstanceDynamic* GroundStormMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				PrimaryColor, AccentColor, 4.5f, 0.72f))
+			{
+				GroundSealMesh->SetMaterial(0, GroundStormMat);
+			}
+		}
+		if (ZoneLight)
+		{
+			ZoneLight->SetLightColor(PrimaryColor);
+			ZoneLight->Intensity = 9000.0f;
+		}
+		break;
+	}
+
+	case EAetheriaSpellId::RequiemBlast:
+	{
+		if (DomeMesh)
+		{
+			DomeMesh->SetStaticMesh(GEngineSphereMesh);
+			DomeMesh->SetVisibility(true);
+			DomeMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 70.0f));
+			DomeMesh->SetRelativeScale3D(FVector(2.2f));
+			if (UMaterialInstanceDynamic* SoulCoreMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(this),
+				PrimaryColor, AccentColor, 9.5f, 0.95f))
+			{
+				DomeMesh->SetMaterial(0, SoulCoreMat);
+			}
+		}
+		if (SecondaryMesh) SecondaryMesh->SetVisibility(false);
+		if (TertiaryMesh) TertiaryMesh->SetVisibility(false);
+		if (GroundSealMesh)
+		{
+			GroundSealMesh->SetVisibility(true);
+			GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 6.0f));
+			GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 1.8f, SphereScale * 1.8f, 1.0f));
+			if (UMaterialInstanceDynamic* RitualSealMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				PrimaryColor, AccentColor, 8.5f, 0.95f))
+			{
+				GroundSealMesh->SetMaterial(0, RitualSealMat);
+			}
+		}
+		if (RingMeshA)
+		{
+			RingMeshA->SetStaticMesh(GEnginePlaneMesh);
+			RingMeshA->SetVisibility(true);
+			RingMeshA->SetRelativeLocation(FVector(0.0f, 0.0f, 65.0f));
+			RingMeshA->SetRelativeRotation(FRotator(28.0f, 0.0f, 0.0f));
+			RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.25f, SphereScale * 1.25f, 1.0f));
+			if (UMaterialInstanceDynamic* RitualRingMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetArcaneRingMaterial(this),
+				AccentColor, PrimaryColor, 9.0f, 0.90f))
+			{
+				RingMeshA->SetMaterial(0, RitualRingMat);
+			}
+		}
+		if (InstancedFX)
+		{
+			InstancedFX->SetStaticMesh(GEngineSphereMesh);
+			if (UMaterialInstanceDynamic* WaveMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+				this, UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(this),
+				PrimaryColor, AccentColor, 8.5f, 1.0f))
+			{
+				InstancedFX->SetMaterial(0, WaveMat);
+			}
+			for (int32 i = 0; i < 12; ++i)
+			{
+				const float Ang = (static_cast<float>(i) / 12.0f) * TWO_PI;
+				StarFilamentParams.Add(FVector(Ang, 0.0f, 0.0f));
+				InstancedFX->AddInstance(FTransform(FRotator::ZeroRotator, FVector(FMath::Cos(Ang) * 90.0f, FMath::Sin(Ang) * 90.0f, 55.0f), FVector(0.28f)));
+			}
+		}
+		if (ZoneLight)
+		{
+			ZoneLight->SetLightColor(PrimaryColor);
+			ZoneLight->Intensity = 12000.0f;
+		}
+		break;
+	}
+
 	default:
 		break;
 	}
@@ -1633,31 +2149,45 @@ void AAetheriaSpellZone::IgniteSolarSingularity()
 	UAetheriaMaterialLibrary::PlayGameSoundAtLocation(GetWorld(), TEXT("SFX_BlackHole_SolarIgnite"), GetActorLocation(), 0.95f);
 
 	const float SphereScale = RadiusUU / 50.0f;
+	const FLinearColor SolarCore(1.00f, 0.98f, 0.86f, 1.0f);
+	const FLinearColor SolarMid(1.00f, 0.42f, 0.04f, 1.0f);
+	const FLinearColor SolarOuter(0.85f, 0.10f, 0.02f, 1.0f);
+	if (DomeMesh)
+	{
+		if (UMaterialInstanceDynamic* SolarHorizon = CreateGargantuaHorizonMID(this, SolarCore, SolarMid, SolarOuter, 20.0f, 5.2f))
+		{
+			DomeMesh->SetMaterial(0, SolarHorizon);
+		}
+	}
 	if (SecondaryMesh)
 	{
-		SecondaryMesh->SetRelativeScale3D(FVector(SphereScale * 1.80f, SphereScale * 1.80f, 1.0f));
-		if (UMaterialInstanceDynamic* QuasarMat = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
-			this, UAetheriaMaterialLibrary::GetAccretionDiskMaterial(this),
-			AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.18f, 0.04f, 1.0f), 12.0f, 1.0f))
+		SecondaryMesh->SetRelativeScale3D(FVector(SphereScale * 2.15f, SphereScale * 2.15f, 1.0f));
+		if (UMaterialInstanceDynamic* QuasarMat = CreateGargantuaDiskMID(this, SolarCore, SolarMid, SolarOuter, 22.0f, 3.6f))
 		{
 			SecondaryMesh->SetMaterial(0, QuasarMat);
 		}
 	}
 	if (RingMeshA)
 	{
-		RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.35f, SphereScale * 1.35f, 1.0f));
-		if (UMaterialInstanceDynamic* QuasarHalo = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
-			this, UAetheriaMaterialLibrary::GetAccretionDiskMaterial(this),
-			FLinearColor(1.0f, 0.85f, 0.35f, 1.0f), AetheriaMindColors::IgnisPlasma, 10.0f, 1.0f))
+		RingMeshA->SetRelativeScale3D(FVector(SphereScale * 1.62f, SphereScale * 1.62f, 1.0f));
+		if (UMaterialInstanceDynamic* QuasarHalo = CreateGargantuaDiskMID(this, SolarCore, SolarMid, SolarOuter, 16.0f, 2.8f))
 		{
 			RingMeshA->SetMaterial(0, QuasarHalo);
+		}
+	}
+	if (RingMeshB)
+	{
+		RingMeshB->SetRelativeScale3D(FVector(SphereScale * 1.38f, SphereScale * 1.38f, 1.0f));
+		if (UMaterialInstanceDynamic* QuasarCounter = CreateGargantuaDiskMID(this, SolarCore, SolarMid, SolarOuter, 11.0f, -2.4f))
+		{
+			RingMeshB->SetMaterial(0, QuasarCounter);
 		}
 	}
 	if (TertiaryMesh)
 	{
 		if (UMaterialInstanceDynamic* QuasarJet = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 			this, UAetheriaMaterialLibrary::GetSolarBeamMaterial(this),
-			AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.90f, 0.55f, 1.0f), 5.8f, 1.0f))
+			AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.90f, 0.55f, 1.0f), 6.8f, 0.90f))
 		{
 			TertiaryMesh->SetMaterial(0, QuasarJet);
 		}
@@ -1666,7 +2196,7 @@ void AAetheriaSpellZone::IgniteSolarSingularity()
 	{
 		if (UMaterialInstanceDynamic* IgnisFX = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
 			this, UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(this),
-			AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.92f, 0.45f, 1.0f), 5.5f, 1.0f))
+			AetheriaMindColors::IgnisPlasma, FLinearColor(1.0f, 0.92f, 0.45f, 1.0f), 6.5f, 1.0f))
 		{
 			InstancedFX->SetMaterial(0, IgnisFX);
 		}
@@ -1675,10 +2205,15 @@ void AAetheriaSpellZone::IgniteSolarSingularity()
 	if (ZoneLight)
 	{
 		ZoneLight->SetLightColor(AetheriaMindColors::IgnisPlasma);
-		ZoneLight->Intensity = 15000.0f;
+		ZoneLight->Intensity = 16500.0f;
 	}
 
-	AddNearbyWizardsCameraTrauma(GetWorld(), GetActorLocation(), 0.28f, 2200.0f);
+	if (UWorld* World = GetWorld())
+	{
+		UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Explosion"), GetActorLocation() + FVector(0.0f, 0.0f, 95.0f), FRotator::ZeroRotator, FVector(2.1f), true, 2.0f);
+	}
+
+	AddNearbyWizardsCameraTrauma(GetWorld(), GetActorLocation(), 0.34f, 2400.0f);
 	AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 1.75f, AetheriaMindColors::IgnisPlasma, 0.62f);
 }
 
@@ -1721,39 +2256,222 @@ void AAetheriaSpellZone::Tick(float DeltaTime)
 		TickPrimalOverload(DeltaTime);
 		break;
 	case EAetheriaSpellId::Macropyre:
-	case EAetheriaSpellId::EyeOfTheStorm:
+	{
+		if (InstancedFX && StarFilamentParams.Num() > 0)
+		{
+			for (int32 i = 0; i < StarFilamentParams.Num(); ++i)
+			{
+				const FVector Base = StarFilamentParams[i];
+				const float Lift = FMath::Fmod(Age * 140.0f + i * 19.0f, 90.0f);
+				const float Pulse = 0.22f + 0.10f * FMath::Sin(Age * 14.0f + i);
+				InstancedFX->UpdateInstanceTransform(i, FTransform(FRotator::ZeroRotator, Base + FVector(0.0f, 0.0f, Lift), FVector(Pulse)), false, false, true);
+			}
+			InstancedFX->MarkRenderStateDirty();
+		}
 		if (TickTimer >= 0.35f && HasAuthority() && GetWorld())
 		{
 			TickTimer = 0.0f;
 			TArray<FOverlapResult> Overlaps;
-			GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(RadiusUU));
+			GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation() + CastDirection * 950.0f, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(1050.0f));
 			for (const FOverlapResult& Overlap : Overlaps)
 			{
 				if (AActor* Victim = Overlap.GetActor())
 				{
-					DealDamageToMobOrActor(Victim, TickDamage, OwnerWizard.Get(), SpellId == EAetheriaSpellId::Macropyre);
+					const FVector ToVictim = Victim->GetActorLocation() - GetActorLocation();
+					const float Along = FVector::DotProduct(ToVictim, CastDirection);
+					const float Perp = FVector::Dist2D(ToVictim, CastDirection * Along);
+					if (Along >= -150.0f && Along <= 2050.0f && Perp <= RadiusUU)
+					{
+						DealDamageToMobOrActor(Victim, TickDamage, OwnerWizard.Get(), true);
+					}
 				}
 			}
 		}
 		break;
+	}
+	case EAetheriaSpellId::EyeOfTheStorm:
+	{
+		if (RingMeshA) RingMeshA->AddLocalRotation(FRotator(0.0f, 220.0f * DeltaTime, 0.0f));
+		if (RingMeshB) RingMeshB->AddLocalRotation(FRotator(0.0f, -290.0f * DeltaTime, 0.0f));
+		if (OwnerWizard.IsValid())
+		{
+			SetActorLocation(OwnerWizard->GetActorLocation());
+		}
+		if (TickTimer >= 0.45f && GetWorld())
+		{
+			TickTimer = 0.0f;
+			if (HasAuthority())
+			{
+				TArray<FOverlapResult> Overlaps;
+				GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(RadiusUU));
+				for (const FOverlapResult& Overlap : Overlaps)
+				{
+					if (AActor* Victim = Overlap.GetActor())
+					{
+						if (Victim->IsA<AAetheriaMobCharacter>())
+						{
+							EmitCosmicBolt(GetActorLocation() + FVector(0.0f, 0.0f, 320.0f), Victim->GetActorLocation() + FVector(0.0f, 0.0f, 45.0f), PrimaryColor, 0.22f, 1.3f);
+							DealDamageToMobOrActor(Victim, TickDamage, OwnerWizard.Get(), false, 0.15f);
+						}
+					}
+				}
+			}
+		}
+		break;
+	}
 	case EAetheriaSpellId::PlasmaField:
-	case EAetheriaSpellId::CataclysmNova:
-	case EAetheriaSpellId::SunStrike:
-	case EAetheriaSpellId::RequiemBlast:
-		if (TickTimer >= 0.50f && HasAuthority() && GetWorld())
+	{
+		const float HalfDur = FMath::Max(0.1f, Duration * 0.5f);
+		const float Phase = (Age <= HalfDur) ? (Age / HalfDur) : (1.0f - (Age - HalfDur) / HalfDur);
+		const float CurRadius = FMath::Lerp(90.0f, RadiusUU, FMath::Clamp(Phase, 0.0f, 1.0f));
+		const float RingScale = (CurRadius * 2.0f) / 100.0f;
+		if (OwnerWizard.IsValid())
+		{
+			SetActorLocation(OwnerWizard->GetActorLocation());
+		}
+		if (GroundSealMesh) GroundSealMesh->SetRelativeScale3D(FVector(RingScale, RingScale, 1.0f));
+		if (RingMeshA) RingMeshA->SetRelativeScale3D(FVector(RingScale * 0.94f, RingScale * 0.94f, 1.0f));
+		if (DomeMesh) DomeMesh->SetRelativeScale3D(FVector(RingScale * 0.35f));
+		if (InstancedFX && StarFilamentParams.Num() > 0)
+		{
+			for (int32 i = 0; i < StarFilamentParams.Num(); ++i)
+			{
+				const float Ang = StarFilamentParams[i].X + Age * 3.5f;
+				InstancedFX->UpdateInstanceTransform(i, FTransform(FRotator::ZeroRotator, FVector(FMath::Cos(Ang) * CurRadius, FMath::Sin(Ang) * CurRadius, 34.0f), FVector(0.18f)), false, false, true);
+			}
+			InstancedFX->MarkRenderStateDirty();
+		}
+		if (TickTimer >= 0.40f && HasAuthority() && GetWorld())
 		{
 			TickTimer = 0.0f;
 			TArray<FOverlapResult> Overlaps;
-			GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(RadiusUU));
+			GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(CurRadius + 80.0f));
 			for (const FOverlapResult& Overlap : Overlaps)
 			{
 				if (AActor* Victim = Overlap.GetActor())
 				{
-					DealDamageToMobOrActor(Victim, TickDamage * 0.5f, OwnerWizard.Get(), SpellId == EAetheriaSpellId::CataclysmNova || SpellId == EAetheriaSpellId::SunStrike);
+					DealDamageToMobOrActor(Victim, TickDamage * 0.5f, OwnerWizard.Get(), false);
 				}
 			}
 		}
 		break;
+	}
+	case EAetheriaSpellId::CataclysmNova:
+	{
+		const float Windup = 0.56f;
+		if (Age < Windup)
+		{
+			const float T = 1.0f - (Age / Windup);
+			if (DomeMesh) DomeMesh->SetRelativeScale3D(FVector(FMath::Lerp(0.12f, RadiusUU / 140.0f, T)));
+			if (RingMeshA) RingMeshA->AddLocalRotation(FRotator(0.0f, 420.0f * DeltaTime, 0.0f));
+		}
+		else if (!bOverloadExploded)
+		{
+			bOverloadExploded = true;
+			if (DomeMesh) DomeMesh->SetVisibility(false);
+			if (RingMeshA) RingMeshA->SetVisibility(false);
+			UAetheriaPackVFX::PlayHit(GetWorld(), GetActorLocation(), EAetheriaSpellId::CataclysmNova);
+			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 1.45f, PrimaryColor, 0.65f);
+			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 1.05f, AccentColor, 0.50f);
+			AddNearbyWizardsCameraTrauma(GetWorld(), GetActorLocation(), 0.36f, 2000.0f);
+			if (HasAuthority() && GetWorld())
+			{
+				TArray<FOverlapResult> Overlaps;
+				GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), FCollisionShape::MakeSphere(RadiusUU));
+				for (const FOverlapResult& Overlap : Overlaps)
+				{
+					if (AActor* Victim = Overlap.GetActor())
+					{
+						DealDamageToMobOrActor(Victim, TickDamage, OwnerWizard.Get(), true, 0.6f);
+					}
+				}
+			}
+		}
+		break;
+	}
+	case EAetheriaSpellId::SunStrike:
+	{
+		const float StrikeDelay = 0.95f;
+		if (Age < StrikeDelay)
+		{
+			const float T = Age / StrikeDelay;
+			if (RingMeshA)
+			{
+				const float Shrink = FMath::Lerp(RadiusUU / 40.0f, 0.35f, T);
+				RingMeshA->SetRelativeScale3D(FVector(Shrink, Shrink, 1.0f));
+				RingMeshA->AddLocalRotation(FRotator(0.0f, 260.0f * DeltaTime, 0.0f));
+			}
+		}
+		else if (!bOverloadExploded)
+		{
+			bOverloadExploded = true;
+			if (DomeMesh) DomeMesh->SetVisibility(true);
+			if (SecondaryMesh) SecondaryMesh->SetVisibility(true);
+			UAetheriaPackVFX::PlayHit(GetWorld(), GetActorLocation(), EAetheriaSpellId::SunStrike);
+			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 1.6f, PrimaryColor, 0.55f);
+			AddNearbyWizardsCameraTrauma(GetWorld(), GetActorLocation(), 0.28f, 1800.0f);
+			if (HasAuthority() && GetWorld())
+			{
+				TArray<FOverlapResult> Overlaps;
+				GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), FCollisionShape::MakeSphere(RadiusUU));
+				for (const FOverlapResult& Overlap : Overlaps)
+				{
+					if (AActor* Victim = Overlap.GetActor())
+					{
+						DealDamageToMobOrActor(Victim, TickDamage, OwnerWizard.Get(), true, 0.35f);
+					}
+				}
+			}
+		}
+		break;
+	}
+	case EAetheriaSpellId::RequiemBlast:
+	{
+		const float ChargeDelay = 0.60f;
+		if (Age < ChargeDelay)
+		{
+			const float T = Age / ChargeDelay;
+			if (DomeMesh) DomeMesh->SetRelativeScale3D(FVector(FMath::Lerp(2.4f, 0.45f, T)));
+			if (RingMeshA) RingMeshA->AddLocalRotation(FRotator(0.0f, 380.0f * DeltaTime, 0.0f));
+		}
+		else
+		{
+			if (!bOverloadExploded)
+			{
+				bOverloadExploded = true;
+				if (DomeMesh) DomeMesh->SetVisibility(false);
+				if (RingMeshA) RingMeshA->SetVisibility(false);
+				UAetheriaPackVFX::PlayHit(GetWorld(), GetActorLocation(), EAetheriaSpellId::RequiemBlast);
+				AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 1.3f, PrimaryColor, 0.70f);
+				AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 0.85f, AccentColor, 0.55f);
+				AddNearbyWizardsCameraTrauma(GetWorld(), GetActorLocation(), 0.38f, 2000.0f);
+				if (HasAuthority() && GetWorld())
+				{
+					TArray<FOverlapResult> Overlaps;
+					GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), FCollisionShape::MakeSphere(RadiusUU));
+					for (const FOverlapResult& Overlap : Overlaps)
+					{
+						if (AActor* Victim = Overlap.GetActor())
+						{
+							DealDamageToMobOrActor(Victim, TickDamage, OwnerWizard.Get(), false, 0.5f);
+						}
+					}
+				}
+			}
+			const float WaveT = FMath::Clamp((Age - ChargeDelay) / FMath::Max(0.1f, Duration - ChargeDelay), 0.0f, 1.0f);
+			const float WaveR = FMath::Lerp(90.0f, RadiusUU, WaveT);
+			if (InstancedFX && StarFilamentParams.Num() > 0)
+			{
+				for (int32 i = 0; i < StarFilamentParams.Num(); ++i)
+				{
+					const float Ang = StarFilamentParams[i].X;
+					InstancedFX->UpdateInstanceTransform(i, FTransform(FRotator::ZeroRotator, FVector(FMath::Cos(Ang) * WaveR, FMath::Sin(Ang) * WaveR, 55.0f), FVector(0.32f * (1.0f - WaveT * 0.5f))), false, false, true);
+				}
+				InstancedFX->MarkRenderStateDirty();
+			}
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -1763,10 +2481,15 @@ void AAetheriaSpellZone::Tick(float DeltaTime)
 		if (SpellId == EAetheriaSpellId::BlackHole)
 		{
 			UAetheriaMaterialLibrary::PlayGameSoundAtLocation(GetWorld(), TEXT("SFX_BlackHole_Collapse"), GetActorLocation(), 0.95f);
+			if (UWorld* World = GetWorld())
+			{
+				UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Shockwave"), GetActorLocation() + FVector(0.0f, 0.0f, 95.0f), FRotator::ZeroRotator, FVector(2.2f), true, 1.8f);
+				UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Vefects/VFX_Distortion/VFX/Particles/NS_Distortion_Flat_05"), GetActorLocation() + FVector(0.0f, 0.0f, 95.0f), FRotator::ZeroRotator, FVector(3.2f), true, 1.4f);
+			}
 			// Relativistic Supernova Collapse Shockwaves + Hawking arcs
-			const FLinearColor BlastColor = bSolarSingularityIgnited ? AetheriaMindColors::IgnisPlasma : PrimaryColor;
+			const FLinearColor BlastColor = bSolarSingularityIgnited ? AetheriaMindColors::IgnisPlasma : FLinearColor(1.0f, 0.62f, 0.18f, 1.0f);
 			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 1.95f, BlastColor, 0.60f);
-			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 1.35f, AetheriaMindColors::MindCyan, 0.48f);
+			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), GetActorLocation(), RadiusUU * 1.35f, AetheriaMindColors::MindViolet, 0.48f);
 			for (int32 b = 0; b < 6; ++b)
 			{
 				const float Ang = b * (TWO_PI / 6.0f);
@@ -1779,8 +2502,14 @@ void AAetheriaSpellZone::Tick(float DeltaTime)
 		{
 			bMeteorFinalEruption = true;
 			const FVector EndLoc = GetActorLocation();
+			if (UWorld* World = GetWorld())
+			{
+				UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Explosion"), EndLoc + FVector(0.0f, 0.0f, 40.0f), FRotator::ZeroRotator, FVector(1.85f), true, 2.0f);
+				UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Stylish_Fire_VFX/Niagara/NS_Stylish_Fire_4"), EndLoc + FVector(0.0f, 0.0f, 18.0f), FRotator::ZeroRotator, FVector(1.9f), true, 2.2f);
+				UAetheriaMaterialLibrary::PlayGameSoundAtLocation(World, TEXT("SFX_Fireball_Boom"), EndLoc, 0.85f);
+			}
 			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), EndLoc, RadiusUU * 1.75f, AetheriaMindColors::IgnisPlasma, 0.62f);
-			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), EndLoc, RadiusUU * 1.20f, AetheriaMindColors::MindViolet, 0.48f);
+			AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), EndLoc, RadiusUU * 1.20f, FLinearColor(1.0f, 0.72f, 0.20f, 1.0f), 0.48f);
 			for (int32 b = 0; b < 4; ++b)
 			{
 				const float Ang = b * HALF_PI + 0.35f;
@@ -1791,11 +2520,13 @@ void AAetheriaSpellZone::Tick(float DeltaTime)
 			if (HasAuthority() && GetWorld())
 			{
 				TArray<FOverlapResult> Overlaps;
-				GetWorld()->OverlapMultiByChannel(Overlaps, EndLoc, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(RadiusUU * 1.15f));
+				GetWorld()->OverlapMultiByObjectType(Overlaps, EndLoc, FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), FCollisionShape::MakeSphere(RadiusUU * 1.15f));
+				TSet<AActor*> HitEndActors;
 				for (const FOverlapResult& Overlap : Overlaps)
 				{
 					AActor* Victim = Overlap.GetActor();
-					if (!Victim || Victim == this) continue;
+					if (!Victim || Victim == this || HitEndActors.Contains(Victim)) continue;
+					HitEndActors.Add(Victim);
 					DealDamageToMobOrActor(Victim, TickDamage * 1.6f, OwnerWizard.Get(), true, 0.45f);
 #if HAS_MOB_CHARACTER
 					if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
@@ -1815,7 +2546,7 @@ void AAetheriaSpellZone::TickBlackHole(float DeltaTime)
 	UWorld* World = GetWorld();
 	if (!World) return;
 	const FVector Center = GetActorLocation();
-	const FVector HorizonOffset(0.0f, 0.0f, 55.0f);
+	const FVector HorizonOffset(0.0f, 0.0f, 95.0f);
 	const float SphereScale = RadiusUU / 50.0f;
 
 	// Final 0.28s Stillness/Implosion contraction before Supernova collapse flash
@@ -1832,61 +2563,44 @@ void AAetheriaSpellZone::TickBlackHole(float DeltaTime)
 		CollapseScaleMult = FMath::Lerp(0.15f, 1.0f, 1.0f - FMath::Pow(1.0f - OpenT, 3.0f));
 	}
 
-	const float MassGrowth = 1.0f + FMath::Min(0.24f, ConsumedMatterCount * 0.004f);
+	const float MassGrowth = 1.0f + FMath::Min(0.20f, ConsumedMatterCount * 0.003f);
 	if (DomeMesh)
 	{
-		DomeMesh->SetRelativeScale3D(FVector(SphereScale * 0.18f * MassGrowth * CollapseScaleMult));
+		DomeMesh->SetRelativeScale3D(FVector(SphereScale * 0.24f * MassGrowth * CollapseScaleMult));
 	}
 	if (SecondaryMesh)
 	{
-		SecondaryMesh->AddLocalRotation(FRotator(0.0f, (bSolarSingularityIgnited ? 340.0f : 230.0f) * DeltaTime, 0.0f));
-		const float DiskBase = bSolarSingularityIgnited ? 1.65f : 1.35f;
+		SecondaryMesh->AddLocalRotation(FRotator(0.0f, (bSolarSingularityIgnited ? 280.0f : 190.0f) * DeltaTime, 0.0f));
+		const float DiskBase = bSolarSingularityIgnited ? 2.15f : 1.95f;
 		SecondaryMesh->SetRelativeScale3D(FVector(SphereScale * DiskBase * CollapseScaleMult, SphereScale * DiskBase * CollapseScaleMult, 1.0f));
 	}
 	if (RingMeshA)
 	{
 		const float Pulse = 1.0f + 0.04f * FMath::Sin(Age * 6.5f);
-		const float LensBase = bSolarSingularityIgnited ? 1.35f : 1.15f;
+		const float LensBase = bSolarSingularityIgnited ? 1.62f : 1.48f;
+		RingMeshA->AddLocalRotation(FRotator(0.0f, 68.0f * DeltaTime, 0.0f));
 		RingMeshA->SetRelativeScale3D(FVector(SphereScale * LensBase * CollapseScaleMult * Pulse, SphereScale * LensBase * CollapseScaleMult * Pulse, 1.0f));
+	}
+	if (RingMeshB)
+	{
+		const float CounterPulse = 1.0f + 0.04f * FMath::Cos(Age * 5.2f);
+		const float CounterBase = bSolarSingularityIgnited ? 1.38f : 1.24f;
+		RingMeshB->AddLocalRotation(FRotator(0.0f, -54.0f * DeltaTime, 0.0f));
+		RingMeshB->SetRelativeScale3D(FVector(SphereScale * CounterBase * CollapseScaleMult * CounterPulse, SphereScale * CounterBase * CollapseScaleMult * CounterPulse, 1.0f));
 	}
 	if (TertiaryMesh)
 	{
 		TertiaryMesh->AddLocalRotation(FRotator(0.0f, 180.0f * DeltaTime, 0.0f));
-		const float JetPulse = 1.0f + 0.25f * FMath::Sin(Age * 14.0f);
-		TertiaryMesh->SetRelativeScale3D(FVector(0.18f * JetPulse, 0.18f * JetPulse, SphereScale * 1.10f * CollapseScaleMult));
+		const float JetPulse = 1.0f + 0.22f * FMath::Sin(Age * 14.0f);
+		TertiaryMesh->SetRelativeScale3D(FVector(0.11f * JetPulse, 0.11f * JetPulse, SphereScale * 0.92f * CollapseScaleMult));
 	}
 	if (GroundSealMesh)
 	{
 		GroundSealMesh->AddLocalRotation(FRotator(0.0f, -48.0f * DeltaTime, 0.0f));
 	}
 
-	// Extract real nearby arena boulders & props from AAetheriaBiomeBuilder on first tick!
-	if (!bExtractedBiomeProps && World)
-	{
-		bExtractedBiomeProps = true;
-#if HAS_BIOME_BUILDER
-		TArray<FTransform> RippedTransforms;
-		for (TActorIterator<AAetheriaBiomeBuilder> BBIt(World); BBIt; ++BBIt)
-		{
-			if (AAetheriaBiomeBuilder* BB = *BBIt)
-			{
-				BB->RipNearbyMatterForSingularity(Center, RadiusUU, 8, RippedTransforms);
-				break;
-			}
-		}
-
-		for (int32 r = 0; r < RippedTransforms.Num() && r < MatterChunks.Num(); ++r)
-		{
-			const FVector RelPos = RippedTransforms[r].GetLocation() - Center;
-			const float Dist2D = FMath::Max(RadiusUU * 0.35f, RelPos.Size2D());
-			MatterChunks[r].OrbitAngle = FMath::Atan2(RelPos.Y, RelPos.X);
-			MatterChunks[r].StartRadius = Dist2D;
-			MatterChunks[r].CurrentRadius = Dist2D;
-			MatterChunks[r].CurrentZ = FMath::Max(0.0f, RelPos.Z);
-			MatterChunks[r].BaseScale = FMath::Clamp(RippedTransforms[r].GetScale3D().GetMax() * 0.42f, 0.28f, 0.72f);
-		}
-#endif
-	}
+	// Architectural safety: NEVER rip world biome ISMs or environment props into the singularity!
+	bExtractedBiomeProps = true;
 
 	// Update 56 Relativistic Star-Matter & Plasma Filaments spiraling smoothly down Keplerian orbits
 	if (InstancedFX && StarFilamentParams.Num() > 0)
@@ -2011,33 +2725,54 @@ void AAetheriaSpellZone::TickBlackHole(float DeltaTime)
 	}
 
 	// Relativistic 1/r^2 + Keplerian Vortex pull & Mob Spaghettification + Authority Damage
+	// CRITICAL FIX: OverlapMultiByObjectType(ECC_Pawn) + strict alive AAetheriaMobCharacter / hostile AAetheriaWizardCharacter whitelist!
+	// NEVER pulls AStaticMeshActor buildings, walls, gates, beacons, or dead props!
 	if (World)
 	{
 		TArray<FOverlapResult> Overlaps;
-		FCollisionShape SphereShape = FCollisionShape::MakeSphere(RadiusUU * 1.15f);
-		World->OverlapMultiByChannel(Overlaps, Center, FQuat::Identity, ECC_Pawn, SphereShape);
+		const FCollisionShape SphereShape = FCollisionShape::MakeSphere(RadiusUU * 1.15f);
+		const FCollisionObjectQueryParams ObjParams(ECC_Pawn);
+		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(BlackHolePull), false, this);
+		QueryParams.AddIgnoredActor(this);
+		if (AActor* Caster = OwnerWizard.Get())
+		{
+			QueryParams.AddIgnoredActor(Caster);
+		}
+		World->OverlapMultiByObjectType(Overlaps, Center, FQuat::Identity, ObjParams, SphereShape, QueryParams);
 
 		bool bAnyBurningInVortex = false;
 		TArray<AAetheriaMobCharacter*> MobsInVortex;
+		TSet<AActor*> ProcessedVictims;
 
 		for (const FOverlapResult& Overlap : Overlaps)
 		{
 			AActor* Victim = Overlap.GetActor();
-			if (!Victim || Victim == this || Victim == OwnerWizard.Get()) continue;
+			if (!Victim || ProcessedVictims.Contains(Victim)) continue;
+			ProcessedVictims.Add(Victim);
+
+			AAetheriaMobCharacter* MobPtr = nullptr;
+			AAetheriaWizardCharacter* WizPtr = nullptr;
+			if (!IsValidSingularityVictim(Victim, this, OwnerWizard.Get(), bIsEnemy, World, MobPtr, WizPtr))
+			{
+				continue;
+			}
+			// Explicit hard guard: ONLY pull validated alive mobs or hostile wizards!
+			if (!MobPtr && !WizPtr)
+			{
+				continue;
+			}
 
 			float MassScale = 1.0f;
-			AAetheriaMobCharacter* MobPtr = nullptr;
 #if HAS_MOB_CHARACTER
-			if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
+			if (MobPtr)
 			{
-				MobPtr = Mob;
-				MobsInVortex.Add(Mob);
-				if (Mob->BurnStacks > 0)
+				MobsInVortex.Add(MobPtr);
+				if (MobPtr->BurnStacks > 0)
 				{
 					bAnyBurningInVortex = true;
 				}
 
-				switch (Mob->MobKind)
+				switch (MobPtr->MobKind)
 				{
 				case EAetheriaMobKind::Swarm:   MassScale = 1.35f; break;
 				case EAetheriaMobKind::Ranged:  MassScale = 1.10f; break;
@@ -2047,7 +2782,7 @@ void AAetheriaSpellZone::TickBlackHole(float DeltaTime)
 			}
 #endif
 #if HAS_WIZARD_CHARACTER
-			if (Cast<AAetheriaWizardCharacter>(Victim))
+			if (WizPtr)
 			{
 				MassScale = 0.35f;
 			}
@@ -2066,15 +2801,18 @@ void AAetheriaSpellZone::TickBlackHole(float DeltaTime)
 
 			if (HasAuthority())
 			{
-				if (Dist2D > 24.0f)
+				if (Dist2D > 28.0f)
 				{
 					const FVector Inward2D = FVector(ToCenter.X, ToCenter.Y, 0.0f).GetSafeNormal();
 					const FVector Tangent2D = FVector::CrossProduct(Inward2D, FVector::UpVector);
-					// Relativistic inward surge + Keplerian orbital swirl
-					const float RadialPull = (260.0f + 840.0f * NormProx * NormProx) * MassScale;
-					const float SwirlSpeed = (220.0f + 360.0f * NormProx) * MassScale;
-					const FVector PullStep = (Inward2D * RadialPull + Tangent2D * SwirlSpeed) * DeltaTime;
-					Victim->SetActorLocation(Victim->GetActorLocation() + PullStep, true);
+					// Relativistic inward surge + Keplerian orbital swirl (ground-projected, swept & clamped)
+					const float RadialPull = (260.0f + 800.0f * NormProx * NormProx) * MassScale;
+					const float SwirlSpeed = (210.0f + 340.0f * NormProx) * MassScale;
+					FVector PullStep = (Inward2D * RadialPull + Tangent2D * SwirlSpeed) * DeltaTime;
+					PullStep.Z = 0.0f;
+					PullStep = PullStep.GetClampedToMaxSize(960.0f * DeltaTime);
+					FHitResult SweepHit;
+					Victim->SetActorLocation(Victim->GetActorLocation() + PullStep, true, &SweepHit, ETeleportType::None);
 				}
 
 				if (TickTimer >= 0.25f && Dist2D <= RadiusUU * 1.02f)
@@ -2188,26 +2926,41 @@ void AAetheriaSpellZone::TickChronosphere(float DeltaTime)
 	TSet<TWeakObjectPtr<AActor>> CurrentOverlaps;
 
 	TArray<FOverlapResult> Overlaps;
-	FCollisionShape SphereShape = FCollisionShape::MakeSphere(RadiusUU);
-	GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), FQuat::Identity, ECC_WorldDynamic, SphereShape);
+	const FCollisionShape SphereShape = FCollisionShape::MakeSphere(RadiusUU);
+	FCollisionObjectQueryParams ObjParams;
+	ObjParams.AddObjectTypesToQuery(ECC_Pawn);
+	ObjParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), FQuat::Identity, ObjParams, SphereShape);
 
 	for (const FOverlapResult& Overlap : Overlaps)
 	{
 		AActor* Actor = Overlap.GetActor();
-		if (!Actor || Actor == this) continue;
+		if (!Actor || Actor == this || Actor->IsA<AStaticMeshActor>()) continue;
 
-		CurrentOverlaps.Add(Actor);
-
-		// Wizard speed buff
+		// Only time-dilate wizards, mobs, and projectiles — never static props or world actors!
 		bool bIsWizard = false;
+		bool bIsChronoTarget = Actor->IsA<AAetheriaSpellProjectile>();
 #if HAS_WIZARD_CHARACTER
 		if (AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(Actor))
 		{
 			bIsWizard = true;
+			bIsChronoTarget = true;
 			Wiz->CustomTimeDilation = 1.4f;
 			Wiz->bInChronosphereBuff = true;
 		}
 #endif
+#if HAS_MOB_CHARACTER
+		if (Cast<AAetheriaMobCharacter>(Actor))
+		{
+			bIsChronoTarget = true;
+		}
+#endif
+		if (!bIsChronoTarget)
+		{
+			continue;
+		}
+
+		CurrentOverlaps.Add(Actor);
 
 		if (!bIsWizard)
 		{
@@ -2263,32 +3016,38 @@ void AAetheriaSpellZone::TickChronosphere(float DeltaTime)
 
 void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 {
-	const float DropTime = 0.44f;
+	// Unmistakable 3-Phase Dota 2 Invoker Chaos Meteor:
+	//   Phase 1 (1.0s): Blazing runic landing circle expands while ~170cm molten boulder plunges ~55 deg from 1400uu skyward
+	//   Phase 2 (Impact): Camera shake + P_Gideon_MeteorBigImpact + NS_Free_Spells_Explosion + NS_Free_Spells_Shockwave + booming SFX
+	//   Phase 3 (3.0s, ~1050uu roll): Boulder physically rolls forward rotating around its cross-axis, leaving fiery ground trail + AoE burn DoT!
+	const float DropTime = 1.00f;
+	const float MeteorRadiusUU = 85.0f; // ~170cm diameter magma boulder
 	const float SphereScale = RadiusUU / 50.0f;
 	const FVector Fwd2D = CastDirection.GetSafeNormal2D().IsNearlyZero() ? FVector::ForwardVector : CastDirection.GetSafeNormal2D();
-	const FVector SkyOffset = -Fwd2D * 920.0f + FVector(0.0f, 0.0f, 1480.0f);
-	const FVector TouchdownLocal(0.0f, 0.0f, RadiusUU * 0.42f);
+	const FVector SkyOffset = -Fwd2D * 980.0f + FVector(0.0f, 0.0f, 1400.0f);
+	const FVector TouchdownLocal(0.0f, 0.0f, MeteorRadiusUU);
 	UWorld* World = GetWorld();
 
 	if (Age < DropTime)
 	{
-		// Phase 1: Blazing diagonal atmospheric entry + crackling sky rift + 36-node plasma wake
+		// Phase 1: Blazing 55-deg diagonal sky plunge + expanding fiery runic target circle
 		const float Alpha = FMath::Clamp(Age / DropTime, 0.0f, 1.0f);
-		const float Accel = Alpha * Alpha; // gravitational entry acceleration
+		const float Accel = FMath::Pow(Alpha, 1.75f); // dramatic sky-to-earth acceleration
 		const FVector CurLocalPos = FMath::Lerp(SkyOffset, TouchdownLocal, Accel);
 		const FVector EntryDir = (TouchdownLocal - SkyOffset).GetSafeNormal();
+		const FVector CurWorldPos = GetActorLocation() + CurLocalPos;
 
 		if (DomeMesh)
 		{
 			DomeMesh->SetRelativeLocation(CurLocalPos);
-			DomeMesh->AddLocalRotation(FRotator(-480.0f * DeltaTime, 220.0f * DeltaTime, 0.0f));
+			DomeMesh->AddLocalRotation(FRotator(-440.0f * DeltaTime, 180.0f * DeltaTime, 0.0f));
 		}
 		if (TertiaryMesh)
 		{
-			TertiaryMesh->SetRelativeLocation(CurLocalPos + EntryDir * 18.0f);
+			TertiaryMesh->SetRelativeLocation(CurLocalPos + EntryDir * 16.0f);
 			TertiaryMesh->SetRelativeRotation(EntryDir.Rotation());
-			const float FlarePulse = 1.0f + 0.16f * FMath::Sin(Age * 42.0f);
-			TertiaryMesh->SetRelativeScale3D(FVector(SphereScale * 1.25f * FlarePulse, SphereScale * 0.90f, SphereScale * 0.90f));
+			const float FlarePulse = 1.0f + 0.16f * FMath::Sin(Age * 38.0f);
+			TertiaryMesh->SetRelativeScale3D(FVector(2.45f * FlarePulse, 1.95f, 1.95f));
 		}
 		if (SecondaryMesh)
 		{
@@ -2300,15 +3059,24 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 		}
 		if (GroundSealMesh)
 		{
-			const float TargetScale = FMath::Lerp(2.45f, 1.55f, Accel) * SphereScale;
+			const float TargetScale = FMath::Lerp(1.25f, 2.25f, Alpha) * SphereScale;
 			GroundSealMesh->SetRelativeScale3D(FVector(TargetScale, TargetScale, 1.0f));
-			GroundSealMesh->AddLocalRotation(FRotator(0.0f, 180.0f * DeltaTime, 0.0f));
+			GroundSealMesh->AddLocalRotation(FRotator(0.0f, 165.0f * DeltaTime, 0.0f));
 		}
 		if (RingMeshB)
 		{
-			const float InnerTarget = FMath::Lerp(0.45f, 1.65f, Accel) * SphereScale;
+			const float InnerTarget = FMath::Lerp(0.35f, 1.95f, Accel) * SphereScale;
 			RingMeshB->SetRelativeScale3D(FVector(InnerTarget, InnerTarget, 1.0f));
 			RingMeshB->AddLocalRotation(FRotator(0.0f, -240.0f * DeltaTime, 0.0f));
+		}
+
+		// Spawn blazing sky-plunge trail VFX along the falling boulder!
+		PlungeTrailVfxCooldown -= DeltaTime;
+		if (World && PlungeTrailVfxCooldown <= 0.0f)
+		{
+			PlungeTrailVfxCooldown = 0.15f;
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/ParagonGideon/FX/Particles/Gideon/Abilities/Meteor/FX/P_Gideon_Meteor_Trail"), CurWorldPos, EntryDir.Rotation(), FVector(1.35f), true, 1.05f);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Stylish_Fire_VFX/Niagara/NS_Stylish_Fire_2"), CurWorldPos, EntryDir.Rotation(), FVector(1.55f), true, 0.85f);
 		}
 
 		// Plasma comet tail stretching up along entry vector
@@ -2333,7 +3101,7 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 		BoltSpawnCooldown -= DeltaTime;
 		if (BoltSpawnCooldown <= 0.0f)
 		{
-			BoltSpawnCooldown = 0.09f;
+			BoltSpawnCooldown = 0.11f;
 			const FVector Center = GetActorLocation();
 			const float Ang = FMath::FRandRange(0.0f, TWO_PI);
 			EmitCosmicBolt(Center + CurLocalPos, Center + FVector(FMath::Cos(Ang) * RadiusUU * 0.7f, FMath::Sin(Ang) * RadiusUU * 0.7f, 12.0f), AetheriaMindColors::IgnisPlasma, 0.14f);
@@ -2341,7 +3109,7 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 		return;
 	}
 
-	// Phase 2: Cataclysmic Touchdown!
+	// Phase 2: Cataclysmic Impact Slam!
 	if (!bMeteorLanded)
 	{
 		bMeteorLanded = true;
@@ -2351,13 +3119,25 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 		SetActorLocation(MeteorRollLocation);
 
 		MeteorFurrowPoints.Add(MeteorRollLocation + FVector(0.0f, 0.0f, 6.0f));
-		NextFurrowDist = 65.0f;
+		NextFurrowDist = 62.0f;
+		NextFireTrailVfxDist = 145.0f;
 
-		// Triple-layer seismic shockwaves + magma arc lightning + camera shake trauma
+		// Layered Fab Impact VFX + Seismic Distortion + Booming Impact SFX + Screen Shake!
+		if (World)
+		{
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/ParagonGideon/FX/Particles/Gideon/Abilities/Meteor/FX/P_Gideon_MeteorBigImpact"), MeteorRollLocation + FVector(0.0f, 0.0f, 22.0f), FRotator::ZeroRotator, FVector(1.85f), true, 2.5f);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Explosion"), MeteorRollLocation + FVector(0.0f, 0.0f, 28.0f), FRotator::ZeroRotator, FVector(2.20f), true, 2.2f);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Shockwave"), MeteorRollLocation + FVector(0.0f, 0.0f, 10.0f), FRotator::ZeroRotator, FVector(2.35f), true, 1.8f);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Vefects/VFX_Distortion/VFX/Particles/NS_Distortion_Flat_06"), MeteorRollLocation + FVector(0.0f, 0.0f, 45.0f), FRotator::ZeroRotator, FVector(2.60f), true, 1.2f);
+			UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Stylish_Fire_VFX/Niagara/NS_Stylish_Fire_1"), MeteorRollLocation + FVector(0.0f, 0.0f, 10.0f), FRotator::ZeroRotator, FVector(1.85f), true, 2.8f);
+			UAetheriaMaterialLibrary::PlayGameSoundAtLocation(World, TEXT("SFX_ChaosMeteor_Impact"), MeteorRollLocation, 0.90f);
+		}
+
+		// Triple-layer seismic shockwaves + magma arc lightning + heavy camera shake trauma
 		AAetheriaLightningArcVFX::SpawnShockwaveRing(World, MeteorRollLocation, RadiusUU * 0.95f, AetheriaMindColors::CrispAlabaster, 0.38f);
 		AAetheriaLightningArcVFX::SpawnShockwaveRing(World, MeteorRollLocation, RadiusUU * 1.65f, AetheriaMindColors::IgnisPlasma, 0.58f);
-		AAetheriaLightningArcVFX::SpawnShockwaveRing(World, MeteorRollLocation, RadiusUU * 2.15f, AetheriaMindColors::MindViolet, 0.72f);
-		AddNearbyWizardsCameraTrauma(World, MeteorRollLocation, 0.48f, 2600.0f);
+		AAetheriaLightningArcVFX::SpawnShockwaveRing(World, MeteorRollLocation, RadiusUU * 2.15f, FLinearColor(1.0f, 0.65f, 0.14f, 1.0f), 0.72f);
+		AddNearbyWizardsCameraTrauma(World, MeteorRollLocation, 0.62f, 2800.0f);
 
 		for (int32 b = 0; b < 5; ++b)
 		{
@@ -2365,7 +3145,7 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 			EmitCosmicBolt(
 				MeteorRollLocation + FVector(0.0f, 0.0f, 60.0f),
 				MeteorRollLocation + FVector(FMath::Cos(Ang) * RadiusUU * 1.15f, FMath::Sin(Ang) * RadiusUU * 1.15f, 18.0f),
-				(b % 2 == 0) ? AetheriaMindColors::IgnisPlasma : AetheriaMindColors::MindViolet,
+				(b % 2 == 0) ? AetheriaMindColors::IgnisPlasma : FLinearColor(1.0f, 0.78f, 0.22f, 1.0f),
 				0.26f);
 		}
 
@@ -2379,21 +3159,24 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 			MatterChunks[k].BallisticVel = FVector(FMath::Cos(Ang) * SpeedXY, FMath::Sin(Ang) * SpeedXY, FMath::FRandRange(540.0f, 920.0f)) + Fwd2D * 220.0f;
 		}
 
-		// Impact burst damage + radial knockback impulse
+		// Impact burst damage + radial knockback impulse (safe Pawn-only overlap!)
 		if (HasAuthority() && World)
 		{
 			TArray<FOverlapResult> Overlaps;
-			World->OverlapMultiByChannel(Overlaps, MeteorRollLocation, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(RadiusUU * 1.10f));
+			World->OverlapMultiByObjectType(Overlaps, MeteorRollLocation, FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), FCollisionShape::MakeSphere(RadiusUU * 1.12f));
+			TSet<AActor*> HitImpactActors;
 			for (const FOverlapResult& Overlap : Overlaps)
 			{
 				AActor* Victim = Overlap.GetActor();
-				if (!Victim || Victim == this) continue;
+				if (!Victim || Victim == this || Victim == OwnerWizard.Get() || HitImpactActors.Contains(Victim)) continue;
+				HitImpactActors.Add(Victim);
 				DealDamageToMobOrActor(Victim, TickDamage * 3.5f, OwnerWizard.Get(), true, 0.6f);
 #if HAS_MOB_CHARACTER
 				if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
 				{
 					const FVector PushOut = (Mob->GetActorLocation() - MeteorRollLocation).GetSafeNormal2D();
 					Mob->ApplyStatusImpulse(PushOut, 640.0f, OwnerWizard.Get(), true);
+					Mob->ApplyBurnStack(TickDamage * 1.2f, OwnerWizard.Get(), 2);
 				}
 #endif
 			}
@@ -2405,9 +3188,9 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 		if (RingMeshB) RingMeshB->SetVisibility(false);
 	}
 
-	// Phase 3: Terrain-Conforming Heavy Roll + Persistent Burning Magma Furrow + Ballistic Shrapnel
-	const float RemainingTime = FMath::Max(0.15f, Duration - DropTime);
-	const float RollSpeed = 1520.0f / RemainingTime;
+	// Phase 3: Rolling Molten Boulder (3.0s, ~1050uu forward roll across ground, rotating around cross-axis + blazing fire trail!)
+	const float RollDuration = FMath::Max(0.5f, Duration - DropTime);
+	const float RollSpeed = 1050.0f / RollDuration; // ~350uu/s across 3.0s = 1050uu iconic Dota 2 Invoker Chaos Meteor roll
 	const float StepDist = RollSpeed * DeltaTime;
 
 	MeteorRollLocation.X += Fwd2D.X * StepDist;
@@ -2426,29 +3209,42 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 		MeteorFurrowPoints.Add(MeteorRollLocation + FVector(0.0f, 0.0f, 6.0f));
 	}
 
-	// Exact forward quaternion rotation: nose-down pitch along CastDirection world frame (no gimbal or backwards roll!)
+	// Spawn blazing lingering ground lava/fire trail VFX every 145uu along the meteor's rolling wake!
+	NextFireTrailVfxDist -= StepDist;
+	if (World && NextFireTrailVfxDist <= 0.0f)
+	{
+		NextFireTrailVfxDist = 145.0f;
+		const FVector TrailGroundPos = MeteorRollLocation + FVector(0.0f, 0.0f, 10.0f);
+		const TCHAR* WakeVfx = ((FireTrailVfxStep % 2) == 0)
+			? TEXT("/Game/Stylish_Fire_VFX/Niagara/NS_Stylish_Fire_1")
+			: TEXT("/Game/FXVarietyPack/Particles/P_ky_fireStorm");
+		UAetheriaPackVFX::PlayOne(World, WakeVfx, TrailGroundPos, Fwd2D.Rotation(), FVector((FireTrailVfxStep % 2) == 0 ? 1.85f : 1.35f), true, 2.75f);
+		UAetheriaPackVFX::PlayOne(World, TEXT("/Game/Stylish_Fire_VFX/Niagara/NS_Stylish_Fire_2"), MeteorRollLocation + FVector(0.0f, 0.0f, MeteorRadiusUU * 0.7f), Fwd2D.Rotation(), FVector(1.35f), true, 0.75f);
+		++FireTrailVfxStep;
+	}
+
+	// Exact physical rolling rotation around cross-axis: Pitch = Speed * dt / Radius (top rolls cleanly forward!)
 	if (DomeMesh)
 	{
-		const float MeteorRadUU = FMath::Max(65.0f, RadiusUU * 0.42f);
-		const float RollDeg = FMath::RadiansToDegrees(StepDist / MeteorRadUU);
+		const float RollDeg = FMath::RadiansToDegrees(StepDist / MeteorRadiusUU);
 		const FQuat DirFrame = FRotationMatrix::MakeFromX(Fwd2D).ToQuat();
 		const FQuat ForwardSpin = DirFrame * FRotator(-RollDeg, 0.0f, 0.0f).Quaternion() * DirFrame.Inverse();
 		MeteorSpinQuat = (ForwardSpin * MeteorSpinQuat).GetNormalized();
 
-		DomeMesh->SetRelativeLocation(FVector(0.0f, 0.0f, MeteorRadUU * 0.92f));
+		DomeMesh->SetRelativeLocation(FVector(0.0f, 0.0f, MeteorRadiusUU * 0.94f));
 		DomeMesh->SetRelativeRotation(MeteorSpinQuat);
 	}
 	if (TertiaryMesh)
 	{
-		TertiaryMesh->SetRelativeLocation(FVector(0.0f, 0.0f, RadiusUU * 0.42f));
+		TertiaryMesh->SetRelativeLocation(FVector(0.0f, 0.0f, MeteorRadiusUU * 0.94f));
 		TertiaryMesh->SetRelativeRotation(Fwd2D.Rotation());
-		const float CoronaPulse = 1.0f + 0.12f * FMath::Sin(Age * 24.0f);
-		TertiaryMesh->SetRelativeScale3D(FVector(SphereScale * 1.10f * CoronaPulse, SphereScale * 0.92f, SphereScale * 0.85f));
+		const float CoronaPulse = 1.0f + 0.14f * FMath::Sin(Age * 24.0f);
+		TertiaryMesh->SetRelativeScale3D(FVector(2.25f * CoronaPulse, 1.95f, 1.85f));
 	}
 	if (GroundSealMesh)
 	{
 		GroundSealMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 5.0f));
-		GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 1.75f, SphereScale * 1.75f, 1.0f));
+		GroundSealMesh->SetRelativeScale3D(FVector(SphereScale * 1.55f, SphereScale * 1.55f, 1.0f));
 		GroundSealMesh->AddLocalRotation(FRotator(0.0f, 160.0f * DeltaTime, 0.0f));
 	}
 
@@ -2510,7 +3306,7 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 				// Flames whipping backwards over rolling boulder
 				const float Ang = Age * 14.0f + p * 0.9f;
 				const float Back = static_cast<float>(p) * 18.0f;
-				const FVector LocalPos = -Fwd2D * Back + FVector(FMath::Cos(Ang) * 45.0f, FMath::Sin(Ang) * 58.0f, RadiusUU * 0.35f + p * 8.0f);
+				const FVector LocalPos = -Fwd2D * Back + FVector(FMath::Cos(Ang) * 45.0f, FMath::Sin(Ang) * 58.0f, MeteorRadiusUU * 0.85f + p * 8.0f);
 				const float S = SphereScale * FMath::Lerp(0.32f, 0.08f, static_cast<float>(p) / 14.0f);
 				PlasmaTrailISM->UpdateInstanceTransform(p, FTransform(FRotator::ZeroRotator, LocalPos, FVector(S)), false, false, true);
 			}
@@ -2531,38 +3327,45 @@ void AAetheriaSpellZone::TickChaosMeteor(float DeltaTime)
 		PlasmaTrailISM->MarkRenderStateDirty();
 	}
 
-	// Continuous magma & furrow burning ticks
+	// Continuous heavy rolling + burning DoT ticks to every mob in its wake (Pawn-only overlap!)
 	if (TickTimer >= 0.25f && HasAuthority() && World)
 	{
 		TickTimer = 0.0f;
 		TSet<AActor*> BurnedThisTick;
 
 		TArray<FOverlapResult> Overlaps;
-		World->OverlapMultiByChannel(Overlaps, MeteorRollLocation, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(RadiusUU * 0.85f));
+		World->OverlapMultiByObjectType(Overlaps, MeteorRollLocation, FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), FCollisionShape::MakeSphere(RadiusUU * 0.85f));
 		for (const FOverlapResult& Overlap : Overlaps)
 		{
-			if (AActor* Victim = Overlap.GetActor())
+			AActor* Victim = Overlap.GetActor();
+			if (!Victim || Victim == this || Victim == OwnerWizard.Get() || BurnedThisTick.Contains(Victim)) continue;
+			BurnedThisTick.Add(Victim);
+			DealDamageToMobOrActor(Victim, TickDamage * 1.25f, OwnerWizard.Get(), true);
+#if HAS_MOB_CHARACTER
+			if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
 			{
-				BurnedThisTick.Add(Victim);
-				DealDamageToMobOrActor(Victim, TickDamage, OwnerWizard.Get(), true);
+				Mob->ApplyBurnStack(TickDamage * 0.9f, OwnerWizard.Get(), 1);
 			}
+#endif
 		}
 
-		// Persistent magma furrow damages enemies standing in the scorched trench
+		// Persistent magma furrow damages enemies standing in the scorched lava trail
 		for (int32 f = 0; f < MeteorFurrowPoints.Num(); f += 2)
 		{
 			TArray<FOverlapResult> FurOverlaps;
-			World->OverlapMultiByChannel(FurOverlaps, MeteorFurrowPoints[f], FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(135.0f));
+			World->OverlapMultiByObjectType(FurOverlaps, MeteorFurrowPoints[f], FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), FCollisionShape::MakeSphere(165.0f));
 			for (const FOverlapResult& Overlap : FurOverlaps)
 			{
-				if (AActor* Victim = Overlap.GetActor())
+				AActor* Victim = Overlap.GetActor();
+				if (!Victim || Victim == this || Victim == OwnerWizard.Get() || BurnedThisTick.Contains(Victim)) continue;
+				BurnedThisTick.Add(Victim);
+				DealDamageToMobOrActor(Victim, TickDamage * 0.55f, OwnerWizard.Get(), true);
+#if HAS_MOB_CHARACTER
+				if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
 				{
-					if (!BurnedThisTick.Contains(Victim))
-					{
-						BurnedThisTick.Add(Victim);
-						DealDamageToMobOrActor(Victim, TickDamage * 0.45f, OwnerWizard.Get(), true);
-					}
+					Mob->ApplyBurnStack(TickDamage * 0.6f, OwnerWizard.Get(), 1);
 				}
+#endif
 			}
 		}
 	}
@@ -2643,29 +3446,31 @@ void AAetheriaSpellZone::TickGravityCataclysm(float DeltaTime)
 
 		TArray<FOverlapResult> Overlaps;
 		FCollisionShape SphereShape = FCollisionShape::MakeSphere(RadiusUU);
-		GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), FQuat::Identity, ECC_Pawn, SphereShape);
+		GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), SphereShape);
 
+		TSet<AActor*> SeenVictims;
 		for (const FOverlapResult& Overlap : Overlaps)
 		{
 			AActor* Victim = Overlap.GetActor();
-			if (!Victim || Victim == this || Victim == OwnerWizard.Get()) continue;
+			if (!Victim || SeenVictims.Contains(Victim)) continue;
+			SeenVictims.Add(Victim);
+
+			AAetheriaMobCharacter* MobPtr = nullptr;
+			AAetheriaWizardCharacter* WizPtr = nullptr;
+			if (!IsValidSingularityVictim(Victim, this, OwnerWizard.Get(), bIsEnemy, GetWorld(), MobPtr, WizPtr)) continue;
 
 			DealDamageToMobOrActor(Victim, TickDamage * 2.8f, OwnerWizard.Get(), false, 1.2f /* 1.2s stun */);
 
 #if HAS_MOB_CHARACTER
-			if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
+			if (MobPtr)
 			{
-				Mob->ApplyAirborneLift(950.0f, 1.2f, OwnerWizard.Get());
+				MobPtr->ApplyAirborneLift(950.0f, 1.2f, OwnerWizard.Get());
 			}
 			else
 #endif
-			if (ACharacter* Char = Cast<ACharacter>(Victim))
+			if (WizPtr)
 			{
-				const AAetheriaGameState* GS = GetWorld() ? GetWorld()->GetGameState<AAetheriaGameState>() : nullptr;
-				if (!GS || GS->GetEffectiveFriendlyFireScale() > 0.0f)
-				{
-					Char->LaunchCharacter(FVector(0.0f, 0.0f, 950.0f), true, true);
-				}
+				WizPtr->LaunchCharacter(FVector(0.0f, 0.0f, 950.0f), true, true);
 			}
 		}
 	}
@@ -2703,24 +3508,26 @@ void AAetheriaSpellZone::TickPrismWall(float DeltaTime)
 		EmitCosmicBolt(Center + Right * (A * 135.0f) + FVector(0.0f, 0.0f, 230.0f), Center + Right * ((A + 1) * 135.0f) + FVector(0.0f, 0.0f, 230.0f), AetheriaMindColors::MindCyan, 0.16f);
 	}
 
-	// Slow mobs by 75%
+	// Slow mobs by 75% (Pawn-only overlap so walls/buildings are never affected)
 	TArray<FOverlapResult> Overlaps;
 	FCollisionShape BoxShape = FCollisionShape::MakeBox(FVector(60.0f, 480.0f, 200.0f));
-	GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), CastDirection.Rotation().Quaternion(), ECC_Pawn, BoxShape);
+	GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), CastDirection.Rotation().Quaternion(), FCollisionObjectQueryParams(ECC_Pawn), BoxShape);
 
 	for (const FOverlapResult& Overlap : Overlaps)
 	{
 		AActor* Victim = Overlap.GetActor();
-		if (!Victim || Victim == this || Victim == OwnerWizard.Get()) continue;
+		AAetheriaMobCharacter* MobPtr = nullptr;
+		AAetheriaWizardCharacter* WizPtr = nullptr;
+		if (!IsValidSingularityVictim(Victim, this, OwnerWizard.Get(), bIsEnemy, GetWorld(), MobPtr, WizPtr)) continue;
 
 		Victim->CustomTimeDilation = 0.25f;
 		ChronoFrozenActors.Add(Victim);
 
 #if HAS_MOB_CHARACTER
-		if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
+		if (MobPtr)
 		{
-			Mob->SlowRecoveryTimer = 1.0f;
-			Mob->RiftSpeedBurstTimer = 0.0f;
+			MobPtr->SlowRecoveryTimer = 1.0f;
+			MobPtr->RiftSpeedBurstTimer = 0.0f;
 		}
 #endif
 	}
@@ -2761,26 +3568,33 @@ void AAetheriaSpellZone::TickChronoBlink(float DeltaTime)
 		InstancedFX->MarkRenderStateDirty();
 	}
 
-	// Pull mobs toward decoy
+	// Pull validated alive enemy pawns toward decoy (NEVER moves static buildings/walls!)
 	if (HasAuthority())
 	{
 		TArray<FOverlapResult> Overlaps;
 		FCollisionShape SphereShape = FCollisionShape::MakeSphere(RadiusUU);
-		GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), FQuat::Identity, ECC_Pawn, SphereShape);
+		GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), SphereShape);
 
+		TSet<AActor*> PulledActors;
 		for (const FOverlapResult& Overlap : Overlaps)
 		{
 			AActor* Victim = Overlap.GetActor();
-			if (!Victim || Victim == this || Victim == OwnerWizard.Get()) continue;
+			if (!Victim || PulledActors.Contains(Victim)) continue;
+			PulledActors.Add(Victim);
+
+			AAetheriaMobCharacter* MobPtr = nullptr;
+			AAetheriaWizardCharacter* WizPtr = nullptr;
+			if (!IsValidSingularityVictim(Victim, this, OwnerWizard.Get(), bIsEnemy, GetWorld(), MobPtr, WizPtr)) continue;
 
 #if HAS_MOB_CHARACTER
-			if (AAetheriaMobCharacter* Mob = Cast<AAetheriaMobCharacter>(Victim))
+			if (MobPtr)
 			{
-				Mob->ApplyTaunt(GetActorLocation(), Duration);
+				MobPtr->ApplyTaunt(GetActorLocation(), Duration);
 			}
 #endif
 
 			FVector ToDecoy = (GetActorLocation() - Victim->GetActorLocation()).GetSafeNormal2D();
+			ToDecoy.Z = 0.0f;
 			Victim->SetActorLocation(Victim->GetActorLocation() + ToDecoy * (240.0f * DeltaTime), true);
 		}
 	}
@@ -2795,10 +3609,14 @@ void AAetheriaSpellZone::TickChronoBlink(float DeltaTime)
 		{
 			TArray<FOverlapResult> Overlaps;
 			FCollisionShape SphereShape = FCollisionShape::MakeSphere(RadiusUU);
-			GetWorld()->OverlapMultiByChannel(Overlaps, GetActorLocation(), FQuat::Identity, ECC_Pawn, SphereShape);
+			GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), FQuat::Identity, FCollisionObjectQueryParams(ECC_Pawn), SphereShape);
+			TSet<AActor*> HitDecoyActors;
 			for (const FOverlapResult& Overlap : Overlaps)
 			{
-				DealDamageToMobOrActor(Overlap.GetActor(), TickDamage * 2.5f, OwnerWizard.Get());
+				AActor* Victim = Overlap.GetActor();
+				if (!Victim || HitDecoyActors.Contains(Victim)) continue;
+				HitDecoyActors.Add(Victim);
+				DealDamageToMobOrActor(Victim, TickDamage * 2.5f, OwnerWizard.Get());
 			}
 		}
 		Destroy();

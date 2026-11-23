@@ -11,6 +11,9 @@ class UAnimSequence;
 class UAnimMontage;
 class UBlendSpace;
 class USkeletalMesh;
+class USkeleton;
+struct FAnimInstanceProxy;
+struct FAetheriaAnimInstanceProxy;
 
 UENUM(BlueprintType)
 enum class EAetheriaAnimAction : uint8
@@ -35,7 +38,11 @@ class AETHERIA_API UAetheriaAnimInstance : public UAnimInstance
 {
 	GENERATED_BODY()
 
+	friend struct FAetheriaAnimInstanceProxy;
+
 public:
+	UAetheriaAnimInstance();
+
 	virtual void NativeInitializeAnimation() override;
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
 
@@ -46,6 +53,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aetheria|Anim")
 	void PlayAction(EAetheriaAnimAction Action, float PlayRate = 1.0f);
 	void PlayCastForSpell(EAetheriaSpellId SpellId);
+
+	UFUNCTION(BlueprintCallable, Category = "Aetheria|Anim")
+	void ReviveFromDeath();
 
 	UFUNCTION(BlueprintCallable, Category = "Aetheria|Anim")
 	bool IsActionPlaying() const;
@@ -116,6 +126,27 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Aetheria|Anim")
 	TObjectPtr<UAnimMontage> DeathMontage = nullptr;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Aetheria|Anim")
+	TObjectPtr<UAnimSequence> CastPrimarySeq = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Aetheria|Anim")
+	TObjectPtr<UAnimSequence> CastHeavySeq = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Aetheria|Anim")
+	TObjectPtr<UAnimSequence> DashSeq = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Aetheria|Anim")
+	TObjectPtr<UAnimSequence> AttackMeleeSeq = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Aetheria|Anim")
+	TObjectPtr<UAnimSequence> AttackSlamSeq = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Aetheria|Anim")
+	TObjectPtr<UAnimSequence> HitReactSeq = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Aetheria|Anim")
+	TObjectPtr<UAnimSequence> DeathSeq = nullptr;
+
 	/** Binds a skeletal mesh + this anim class onto a character's GetMesh(). */
 	static bool BindSkeletalPresentation(
 		ACharacter* Character,
@@ -145,14 +176,34 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aetheria|Anim")
 	static int32 FillLocomotionBlendSpaces();
 
+protected:
+	virtual FAnimInstanceProxy* CreateAnimInstanceProxy() override;
+	virtual void DestroyAnimInstanceProxy(FAnimInstanceProxy* InProxy) override;
+
 private:
+	USkeleton* GetTargetSkeleton() const;
+	bool IsSkeletonCompatible(const USkeleton* AssetSkel, const USkeleton* TargetSkel) const;
 	void ResolveAssetsIfNeeded();
 	void TickLocomotionPlayback();
+	void PlaySequenceAction(UAnimSequence* Seq, float PlayRate = 1.0f, bool bHoldEnd = false);
 	UAnimSequence* PickLocomotionSequence() const;
-	UAnimSequence* FindSequenceByNames(const TArray<FString>& Names) const;
+	UAnimSequence* FindSequenceByNames(const TArray<FString>& Names, bool bAllowAdditive = false) const;
 	UAnimMontage* FindMontageByNames(const TArray<FString>& Names) const;
 	UAnimMontage* EnsureMontage(UAnimMontage* Montage, UAnimSequence* Source, const TCHAR* SlotName);
 	TMap<FString, TWeakObjectPtr<UAnimationAsset>> FolderAssets;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UAnimationAsset>> CachedFolderAssets;
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> DesiredLocomotionSeq = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> PendingActionSeq = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> ActiveActionSeq = nullptr;
+	float PendingActionPlayRate = 1.0f;
+	bool bPendingActionHoldEnd = false;
+	bool bPendingActionRequest = false;
+	bool bPendingResetDeath = false;
+	bool bProxyActionPlaying = false;
 	bool bAssetsResolved = false;
 	TWeakObjectPtr<UAnimSequence> CurrentLocomotion;
 	float LastLocomotionDirection = 0.0f;

@@ -2,6 +2,7 @@
 #include "AetheriaPackVFX.h"
 #include "AetheriaAnimInstance.h"
 #include "AetheriaWizardCharacter.h"
+#include "AetheriaSlateHUD.h"
 #include "AIController.h"
 #include "AetheriaGameMode.h"
 #include "AetheriaWorldDirector.h"
@@ -22,6 +23,10 @@
 #include "Engine/OverlapResult.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Animation/AnimSequence.h"
+#include "Animation/Skeleton.h"
+#include "Engine/SkeletalMesh.h"
+#include "Misc/PackageName.h"
 
 AAetheriaMobCharacter::AAetheriaMobCharacter()
 {
@@ -44,6 +49,10 @@ AAetheriaMobCharacter::AAetheriaMobCharacter()
 
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 	AIControllerClass = AAIController::StaticClass();
+	if (GetMesh())
+	{
+		GetMesh()->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	}
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeFinder(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereFinder(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
@@ -138,6 +147,9 @@ AAetheriaMobCharacter::AAetheriaMobCharacter()
 	OrbMesh1 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("OrbMesh1"));
 	OrbMesh1->SetupAttachment(RootComponent);
 	OrbMesh1->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	OrbMesh1->SetCastShadow(false);
+	OrbMesh1->SetVisibility(false);
+	OrbMesh1->SetHiddenInGame(true);
 	if (SphereMesh)
 	{
 		OrbMesh1->SetStaticMesh(SphereMesh);
@@ -146,6 +158,9 @@ AAetheriaMobCharacter::AAetheriaMobCharacter()
 	OrbMesh2 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("OrbMesh2"));
 	OrbMesh2->SetupAttachment(RootComponent);
 	OrbMesh2->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	OrbMesh2->SetCastShadow(false);
+	OrbMesh2->SetVisibility(false);
+	OrbMesh2->SetHiddenInGame(true);
 	if (SphereMesh)
 	{
 		OrbMesh2->SetStaticMesh(SphereMesh);
@@ -154,6 +169,9 @@ AAetheriaMobCharacter::AAetheriaMobCharacter()
 	OrbMesh3 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("OrbMesh3"));
 	OrbMesh3->SetupAttachment(RootComponent);
 	OrbMesh3->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	OrbMesh3->SetCastShadow(false);
+	OrbMesh3->SetVisibility(false);
+	OrbMesh3->SetHiddenInGame(true);
 	if (SphereMesh)
 	{
 		OrbMesh3->SetStaticMesh(SphereMesh);
@@ -237,6 +255,8 @@ void AAetheriaMobCharacter::InitAmbushEmergence(EAetheriaAmbushKind InKind, bool
 		HP = MaxHP;
 		BaseDamage *= 1.15f;
 		SetActorScale3D(GetActorScale3D() * 1.22f);
+		UpdateVisualSilhouette();
+		UpdateMaterials();
 	}
 	BeginTypedEntrance();
 }
@@ -248,6 +268,103 @@ void AAetheriaMobCharacter::BeginTypedEntrance()
 	{
 		Mov->StopMovementImmediately();
 		Mov->DisableMovement();
+	}
+
+	// Resolve a non-penetrating walkable simple-collision ground spot using the
+	// mob's final scaled capsule (after InitFromArchetype & Elite scaling) so
+	// EntranceStartZ is never embedded inside floors, slopes, or walls.
+	if (UWorld* World = GetWorld())
+	{
+		const float HalfH = GetCapsuleComponent() ? GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 110.0f;
+		const float Radius = GetCapsuleComponent() ? GetCapsuleComponent()->GetScaledCapsuleRadius() : 90.0f;
+		const FVector Desired = GetActorLocation();
+
+		FCollisionQueryParams Q(SCENE_QUERY_STAT(AetheriaMobEntranceGround), false);
+		Q.AddIgnoredActor(this);
+		for (TActorIterator<APawn> It(World); It; ++It)
+		{
+			Q.AddIgnoredActor(*It);
+		}
+
+		const float SweepUp = FMath::Max(350.0f, HalfH + 140.0f);
+		const float SweepDown = 2500.0f;
+		const float Phase = FMath::FRandRange(0.0f, 2.0f * PI);
+		static const float Rings[] = { 0.f, 140.f, 280.f, 460.f, 700.f, 1000.f };
+		bool bPlaced = false;
+		FVector BestFloorFallback = Desired;
+		bool bHaveFloorFallback = false;
+
+		for (float R : Rings)
+		{
+			const int32 Steps = (R <= 0.f) ? 1 : 12;
+			for (int32 i = 0; i < Steps; ++i)
+			{
+				const float Angle = Phase + (2.0f * PI * i) / Steps;
+				const FVector P = Desired + FVector(FMath::Cos(Angle) * R, FMath::Sin(Angle) * R, 0.0f);
+				FHitResult Hit;
+				if (!World->SweepSingleByChannel(
+						Hit,
+						P + FVector(0.0f, 0.0f, SweepUp),
+						P - FVector(0.0f, 0.0f, SweepDown),
+						FQuat::Identity,
+						ECC_Pawn,
+						FCollisionShape::MakeSphere(20.0f),
+						Q))
+				{
+					continue;
+				}
+				if (Hit.ImpactNormal.Z < 0.72f || Hit.bStartPenetrating)
+				{
+					continue;
+				}
+				const FVector CandidateLoc = Hit.ImpactPoint + FVector(0.0f, 0.0f, HalfH + 8.0f);
+				if (!bHaveFloorFallback)
+				{
+					BestFloorFallback = CandidateLoc;
+					bHaveFloorFallback = true;
+				}
+				if (World->OverlapBlockingTestByChannel(
+						CandidateLoc,
+						FQuat::Identity,
+						ECC_Pawn,
+						FCollisionShape::MakeCapsule(Radius + 6.0f, HalfH + 4.0f),
+						Q))
+				{
+					continue;
+				}
+				bool bTooCloseToChar = false;
+				for (TActorIterator<ACharacter> CharIt(World); CharIt; ++CharIt)
+				{
+					ACharacter* Other = *CharIt;
+					if (!Other || Other == this || Other->IsActorBeingDestroyed())
+					{
+						continue;
+					}
+					const float OtherRadius = Other->GetCapsuleComponent() ? Other->GetCapsuleComponent()->GetScaledCapsuleRadius() : 60.0f;
+					if (FVector::Dist2D(CandidateLoc, Other->GetActorLocation()) < (Radius + OtherRadius + 18.0f))
+					{
+						bTooCloseToChar = true;
+						break;
+					}
+				}
+				if (bTooCloseToChar)
+				{
+					continue;
+				}
+				SetActorLocation(CandidateLoc, false, nullptr, ETeleportType::TeleportPhysics);
+				bPlaced = true;
+				break;
+			}
+			if (bPlaced)
+			{
+				break;
+			}
+		}
+
+		if (!bPlaced && bHaveFloorFallback)
+		{
+			SetActorLocation(BestFloorFallback, false, nullptr, ETeleportType::TeleportPhysics);
+		}
 	}
 
 	const FVector Loc = GetActorLocation();
@@ -276,7 +393,7 @@ void AAetheriaMobCharacter::BeginTypedEntrance()
 	else if (bElite)
 	{
 		EmergenceTimer = 1.05f;
-		SetActorLocation(FVector(Loc.X, Loc.Y, Loc.Z - 160.0f));
+		SetActorLocation(FVector(Loc.X, Loc.Y, Loc.Z - 160.0f), false, nullptr, ETeleportType::TeleportPhysics);
 		UAetheriaPackVFX::PlaySpawnEntrance(this, MobKind, Loc, true, false);
 		if (UAetheriaAnimInstance* Anim = Cast<UAetheriaAnimInstance>(GetMesh() ? GetMesh()->GetAnimInstance() : nullptr))
 		{
@@ -286,7 +403,7 @@ void AAetheriaMobCharacter::BeginTypedEntrance()
 	else if (MobKind == EAetheriaMobKind::Swarm)
 	{
 		EmergenceTimer = 0.85f;
-		SetActorLocation(FVector(Loc.X, Loc.Y, Loc.Z - 200.0f));
+		SetActorLocation(FVector(Loc.X, Loc.Y, Loc.Z - 200.0f), false, nullptr, ETeleportType::TeleportPhysics);
 		UAetheriaPackVFX::PlaySpawnEntrance(this, MobKind, Loc, false, false);
 		if (UAetheriaAnimInstance* Anim = Cast<UAetheriaAnimInstance>(GetMesh() ? GetMesh()->GetAnimInstance() : nullptr))
 		{
@@ -309,7 +426,7 @@ void AAetheriaMobCharacter::BeginTypedEntrance()
 	else if (MobKind == EAetheriaMobKind::Bruiser)
 	{
 		EmergenceTimer = 0.95f;
-		SetActorLocation(FVector(Loc.X, Loc.Y, Loc.Z + 900.0f));
+		SetActorLocation(FVector(Loc.X, Loc.Y, Loc.Z + 900.0f), false, nullptr, ETeleportType::TeleportPhysics);
 		if (UAetheriaAnimInstance* Anim = Cast<UAetheriaAnimInstance>(GetMesh() ? GetMesh()->GetAnimInstance() : nullptr))
 		{
 			Anim->PlayAction(EAetheriaAnimAction::AttackSlam);
@@ -697,11 +814,59 @@ void AAetheriaMobCharacter::ApplySpellDamage(float Amount, AActor* InstigatorWiz
 	{
 		HitRecoilTimer = 0.16f;
 	}
-	if (Amount >= BaseDamage * 2.5f || FinalDamage >= BaseDamage * 2.5f)
-	{
-		TriggerImpactHitstop(0.048f);
-	}
 	HP = FMath::Clamp(HP - FinalDamage, 0.0f, MaxHP);
+
+	if (FinalDamage >= 1.0f)
+	{
+		const bool bCritOrSynergy = (FinalDamage >= Amount * 1.15f) || bIgnite || (StunDuration > 0.0f);
+		const FLinearColor DmgCol = bIgnite
+			? FLinearColor(1.0f, 0.48f, 0.14f, 1.0f)
+			: (StunDuration > 0.0f ? FLinearColor(0.32f, 0.90f, 1.0f, 1.0f) : FLinearColor(0.98f, 0.92f, 0.58f, 1.0f));
+		AAetheriaHUD::SpawnFloatingDamageNumber(
+			GetWorld(),
+			GetActorLocation() + FVector(0.0f, 0.0f, 65.0f),
+			FinalDamage,
+			bCritOrSynergy,
+			DmgCol);
+
+		const TCHAR* HitSfx = (MobKind == EAetheriaMobKind::Bruiser || MobKind == EAetheriaMobKind::Boss)
+			? TEXT("SFX_Hit_Armor")
+			: TEXT("SFX_HitImpact");
+		UAetheriaMaterialLibrary::PlayGameSoundAtLocation(this, HitSfx, GetActorLocation(), 0.68f);
+
+		if (HitReactCooldown <= 0.0f && HP > 0.0f && !bDying)
+		{
+			HitReactCooldown = 0.32f;
+			PlayPresentationAction(static_cast<uint8>(EAetheriaAnimAction::HitReact));
+		}
+
+		if (MobKind != EAetheriaMobKind::Boss && InstigatorWizard && !bIsFrozen && GetCharacterMovement() && !bDying && HP > 0.0f)
+		{
+			const FVector KnockDir = (GetActorLocation() - InstigatorWizard->GetActorLocation()).GetSafeNormal2D();
+			if (!KnockDir.IsNearlyZero())
+			{
+				LaunchCharacter(KnockDir * (MobKind == EAetheriaMobKind::Bruiser ? 140.0f : 260.0f), false, false);
+			}
+		}
+
+		if (UWorld* World = GetWorld())
+		{
+			UAetheriaPackVFX::PlayHit(
+				World,
+				GetActorLocation() + FVector(0.0f, 0.0f, 45.0f),
+				bIgnite ? EAetheriaSpellId::Fireball : EAetheriaSpellId::None);
+		}
+
+		if (FinalDamage >= 110.0f || Amount >= BaseDamage * 2.5f)
+		{
+			TriggerImpactHitstop(0.036f);
+		}
+
+		if (AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(InstigatorWizard))
+		{
+			Wiz->AddCameraTrauma(FinalDamage >= 150.0f ? 0.14f : 0.05f);
+		}
+	}
 
 	if (bIgnite)
 	{
@@ -822,6 +987,7 @@ void AAetheriaMobCharacter::SetChronoFrozen(bool bFrozen)
 		}
 	}
 	CustomTimeDilation = bFrozen ? 0.0f : 1.0f;
+	if (!bFrozen) { UpdateMaterials(); }
 }
 
 void AAetheriaMobCharacter::OnRep_MobKind()
@@ -856,58 +1022,453 @@ void AAetheriaMobCharacter::OnRep_HP()
 void AAetheriaMobCharacter::OnRep_IsFrozen()
 {
 	CustomTimeDilation = bIsFrozen ? 0.0f : 1.0f;
+	if (!bIsFrozen) { UpdateMaterials(); }
 }
 
 void AAetheriaMobCharacter::OnRep_BossOrbs()
 {
 }
 
-void AAetheriaMobCharacter::UpdateVisualSilhouette()
+namespace AetheriaMobRoster
 {
-	const float HalfH = GetCapsuleComponent() ? GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight() : 96.0f;
-	switch (MobKind)
+	struct FFabEnemySpec
 	{
-	case EAetheriaMobKind::Boss:
+		const TCHAR* MeshPkg = nullptr;
+		const TCHAR* AnimFolder = nullptr;
+		float Scale = 1.0f;
+		const TCHAR* IdleClip = nullptr;
+		const TCHAR* RunFwdClip = nullptr;
+		const TCHAR* RunBackClip = nullptr;
+		const TCHAR* RunLeftClip = nullptr;
+		const TCHAR* RunRightClip = nullptr;
+		const TCHAR* MeleeClip = nullptr;
+		const TCHAR* SlamClip = nullptr;
+		const TCHAR* CastClip = nullptr;
+		const TCHAR* HitClip = nullptr;
+		const TCHAR* DeathClip = nullptr;
+	};
+
+	static UAnimSequence* LoadCompatClip(const TCHAR* AnimFolder, const TCHAR* ClipName, USkeleton* TargetSkel)
 	{
-		// 04:07: every Paragon hero except Gideon is a boss, one per world.
-		EAetheriaWorldId Wid = EAetheriaWorldId::Bastion;
-		if (UWorld* World = GetWorld())
-		{
-			if (const AAetheriaGameMode* GM = World->GetAuthGameMode<AAetheriaGameMode>())
-			{
-				Wid = GM->GetActiveWorld();
-			}
-		}
-		const TCHAR* Pkg = AetheriaWorldDirector::BossPackageForWorld(Wid);
-		const TCHAR* Hero = AetheriaWorldDirector::BossHeroForWorld(Wid);
-		bUsingSkeletalPresentation = UAetheriaAnimInstance::BindBestPresentation(
-			this, HalfH, { FString(Pkg) }, FString(Hero),
-			TEXT("/Game/Characters/BossArchon"), TEXT("SKM_BossArchon"));
-		break;
-	}
-	case EAetheriaMobKind::Swarm:
-		// SwarmReaper Anims/Montages were quarantined after a broken Interchange
-		// reimport. Paragon Minions ship a complete melee mesh + anim set and
-		// read as a pack, which fits a swarm better than a frozen Godot mesh.
-		bUsingSkeletalPresentation = UAetheriaAnimInstance::BindBestPresentation(
-			this, HalfH, { TEXT("/Game/ParagonMinions") }, TEXT("Minion"),
-			TEXT("/Game/Characters/SwarmReaper"), TEXT("SKM_SwarmReaper"));
-		break;
-	case EAetheriaMobKind::Ranged:
-		bUsingSkeletalPresentation = UAetheriaAnimInstance::BindBestPresentation(
-			this, HalfH, { TEXT("/Game/Characters/RangedLich") }, TEXT("RangedLich"),
-			TEXT("/Game/Characters/RangedLich"), TEXT("SKM_RangedLich"));
-		break;
-	case EAetheriaMobKind::Bruiser:
-		bUsingSkeletalPresentation = UAetheriaAnimInstance::BindBestPresentation(
-			this, HalfH, { TEXT("/Game/Characters/BruiserJuggernaut") }, TEXT("BruiserJuggernaut"),
-			TEXT("/Game/Characters/BruiserJuggernaut"), TEXT("SKM_BruiserJuggernaut"));
-		break;
-	default:
-		break;
+		if (!AnimFolder || !ClipName || !ClipName[0]) return nullptr;
+		const FString ObjPath = FString::Printf(TEXT("%s/%s.%s"), AnimFolder, ClipName, ClipName);
+		UAnimSequence* Seq = LoadObject<UAnimSequence>(nullptr, *ObjPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (!Seq || Seq->IsValidAdditive()) return nullptr;
+		if (TargetSkel && Seq->GetSkeleton() != TargetSkel) return nullptr;
+		return Seq;
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("[Aetheria] Mob bind kind=%d skeletal=%d"), static_cast<int32>(MobKind), bUsingSkeletalPresentation ? 1 : 0);
+	static bool TryBindFabSpec(AAetheriaMobCharacter* Mob, float HalfH, const FFabEnemySpec& Spec)
+	{
+		if (!Mob || !Spec.MeshPkg || !Spec.MeshPkg[0]) return false;
+		if (!UAetheriaAnimInstance::BindExplicitPresentation(
+			Mob,
+			Spec.MeshPkg,
+			Spec.AnimFolder ? Spec.AnimFolder : TEXT(""),
+			TEXT(""),
+			HalfH,
+			Spec.Scale))
+		{
+			return false;
+		}
+
+		USkeletalMeshComponent* SkelComp = Mob->GetMesh();
+		UAetheriaAnimInstance* Anim = SkelComp ? Cast<UAetheriaAnimInstance>(SkelComp->GetAnimInstance()) : nullptr;
+		if (Anim && Spec.AnimFolder && Spec.AnimFolder[0])
+		{
+			USkeleton* TargetSkel = (SkelComp && SkelComp->GetSkeletalMeshAsset()) ? SkelComp->GetSkeletalMeshAsset()->GetSkeleton() : nullptr;
+			auto Assign = [&](TObjectPtr<UAnimSequence>& Slot, const TCHAR* ClipName, bool bForceOverride = false)
+			{
+				if (!bForceOverride && Slot != nullptr) return;
+				if (UAnimSequence* Seq = LoadCompatClip(Spec.AnimFolder, ClipName, TargetSkel))
+				{
+					Slot = Seq;
+				}
+			};
+
+			Assign(Anim->IdleSeq, Spec.IdleClip, Spec.IdleClip != nullptr);
+			Assign(Anim->RunFwdSeq, Spec.RunFwdClip, Spec.RunFwdClip != nullptr);
+			Assign(Anim->RunBackSeq, Spec.RunBackClip, false);
+			Assign(Anim->RunStrafeLSeq, Spec.RunLeftClip, false);
+			Assign(Anim->RunStrafeRSeq, Spec.RunRightClip, false);
+			Assign(Anim->AttackMeleeSeq, Spec.MeleeClip, Spec.MeleeClip != nullptr);
+			Assign(Anim->AttackSlamSeq, Spec.SlamClip, Spec.SlamClip != nullptr);
+			Assign(Anim->CastPrimarySeq, Spec.CastClip, Spec.CastClip != nullptr);
+			Assign(Anim->HitReactSeq, Spec.HitClip, false);
+			Assign(Anim->DeathSeq, Spec.DeathClip, Spec.DeathClip != nullptr);
+
+			if (!Anim->RunFwdSeq && Anim->IdleSeq) { Anim->RunFwdSeq = Anim->IdleSeq; }
+			if (!Anim->IdleSeq && Anim->RunFwdSeq) { Anim->IdleSeq = Anim->RunFwdSeq; }
+			if (!Anim->AttackSlamSeq && Anim->AttackMeleeSeq) { Anim->AttackSlamSeq = Anim->AttackMeleeSeq; }
+			if (!Anim->CastPrimarySeq && Anim->AttackMeleeSeq) { Anim->CastPrimarySeq = Anim->AttackMeleeSeq; }
+		}
+		return true;
+	}
+
+	static bool TryBindList(AAetheriaMobCharacter* Mob, float HalfH, const TArray<FFabEnemySpec>& Specs)
+	{
+		for (const FFabEnemySpec& Spec : Specs)
+		{
+			if (TryBindFabSpec(Mob, HalfH, Spec))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
+void AAetheriaMobCharacter::UpdateVisualSilhouette()
+{
+	using namespace AetheriaMobRoster;
+
+	const float HalfH = GetCapsuleComponent() ? GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight() : 96.0f;
+
+	EAetheriaWorldId Wid = EAetheriaWorldId::Bastion;
+	if (UWorld* World = GetWorld())
+	{
+		if (const AAetheriaGameMode* GM = World->GetAuthGameMode<AAetheriaGameMode>())
+		{
+			Wid = GM->GetActiveWorld();
+		}
+		else
+		{
+			Wid = AetheriaWorldDirector::WorldIdFromMapName(World->GetMapName());
+		}
+	}
+
+	static uint32 GRosterVariantCounter = 0;
+	const int32 Variant = static_cast<int32>((GRosterVariantCounter++) & 1);
+
+	// Verified on-disk Fab Enemy Roster entries across ParagonMinions, Paragon Heroes, CityofBrass_Enemies & ROG_Creatures
+	static const FFabEnemySpec DawnMelee{
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Meshes/Minion_Lane_Melee_Core_Dawn"),
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Animations/Melee"),
+		1.15f, nullptr, TEXT("Combat_JogFwd"), nullptr, nullptr, nullptr, TEXT("Attack_A"), TEXT("Attack_B"), nullptr, TEXT("HitReact_Front"), TEXT("Death_A")
+	};
+	static const FFabEnemySpec DuskMelee{
+		TEXT("/Game/ParagonMinions/Characters/Minions/Dusk_Minions/Meshes/Minion_Lane_Melee_Core_Dusk"),
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Animations/Melee"),
+		1.15f, nullptr, TEXT("Combat_JogFwd"), nullptr, nullptr, nullptr, TEXT("Attack_A"), TEXT("Attack_B"), nullptr, TEXT("HitReact_Front"), TEXT("Death_A")
+	};
+	static const FFabEnemySpec CorpseSwordsman{
+		TEXT("/Game/CityofBrass_Enemies/Meshes/Enemy/Corpse/Corpse_Sword"),
+		TEXT("/Game/CityofBrass_Enemies/Meshes/Enemy/Corpse/animation"),
+		1.18f, TEXT("Corpse_alert_idle"), TEXT("Corpse_Run_Forward"), TEXT("Corpse_Run_Back"), TEXT("Corpse_Run_Left"), TEXT("Corpse_Run_Right"),
+		TEXT("Corpse_Alert_Attack_Basic01"), TEXT("Corpse_Alert_Attack_Basic02"), TEXT("Corpse_Alert_Attack_Fast"), TEXT("Corpse_Alert_Stunned"), TEXT("Corpse_Alert_Death")
+	};
+	static const FFabEnemySpec BuffBlackPredator{
+		TEXT("/Game/ParagonMinions/Characters/Buff/Buff_Black/Meshes/Buff_Black"),
+		TEXT("/Game/ParagonMinions/Characters/Buff/Buff_Black/Animations"),
+		1.02f, TEXT("Idle"), TEXT("Run_FWD"), TEXT("Run_BWD"), TEXT("Run_Left"), TEXT("Run_Right"),
+		TEXT("BiteAttack_A"), TEXT("BiteAttack_B"), TEXT("Spit_Attack"), TEXT("HitReaction_FWD"), TEXT("Death_front")
+	};
+	static const FFabEnemySpec BuffGreenStalker{
+		TEXT("/Game/ParagonMinions/Characters/Buff/Buff_Green/Meshes/Buff_Green"),
+		TEXT("/Game/ParagonMinions/Characters/Buff/Buff_Green/Animations"),
+		1.06f, TEXT("Idle"), TEXT("Run_Fwd"), TEXT("Run_Back"), TEXT("Run_Left"), TEXT("Run_Right"),
+		TEXT("Knock_Fwd"), TEXT("Knock_Fwd"), nullptr, TEXT("Hit_Front"), nullptr
+	};
+	static const FFabEnemySpec RogVoidShade{
+		TEXT("/Game/ROG_Creatures/Stickman/Meshes/SK_Stickman"),
+		TEXT("/Game/ROG_Creatures/Stickman/Animations"),
+		1.12f, TEXT("A_Stickman_Idle"), TEXT("A_Stickman_Walk"), TEXT("A_Stickman_Walk"), nullptr, nullptr,
+		TEXT("A_Stickman_Attack_01"), TEXT("A_Stickman_Attack_02"), TEXT("A_Stickman_Attack_01"), TEXT("A_Stickman_hit_back"), TEXT("A_Stickman_Death")
+	};
+
+	static const FFabEnemySpec DawnRanged{
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Meshes/Minion_Lane_Ranged_Core_Dawn"),
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Animations/Ranged"),
+		1.15f, TEXT("Idle_A"), TEXT("Jog_Fwd_Combat_A"), nullptr, TEXT("Jog_Left_Combat_A"), nullptr,
+		TEXT("Fire_A"), TEXT("Fire_B"), TEXT("Fire_A"), TEXT("HitReact_Front_A"), TEXT("Death_Front_A")
+	};
+	static const FFabEnemySpec DuskRanged{
+		TEXT("/Game/ParagonMinions/Characters/Minions/Dusk_Minions/Meshes/Minion_Lane_Ranged_Core_Dusk"),
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Animations/Ranged"),
+		1.15f, TEXT("Idle_A"), TEXT("Jog_Fwd_Combat_A"), nullptr, TEXT("Jog_Left_Combat_A"), nullptr,
+		TEXT("Fire_A"), TEXT("Fire_B"), TEXT("Fire_A"), TEXT("HitReact_Front_A"), TEXT("Death_Front_A")
+	};
+	static const FFabEnemySpec BuffBlueArcane{
+		TEXT("/Game/ParagonMinions/Characters/Buff/Buff_Blue/Meshes/Buff_Blue"),
+		TEXT("/Game/ParagonMinions/Characters/Buff/Buff_Blue/Animations"),
+		1.02f, TEXT("Idle_A"), TEXT("Fly_Fwd_FullSpeed"), TEXT("Fly_Fwd_MidSpeed"), nullptr, nullptr,
+		TEXT("Fire_A"), TEXT("Fire_B"), TEXT("Fire_A"), TEXT("Hitreat_Fwd"), TEXT("Death_Fwd")
+	};
+	static const FFabEnemySpec MorigeshWitch{
+		TEXT("/Game/ParagonMorigesh/Characters/Heroes/Morigesh/Meshes/Morigesh"),
+		TEXT("/Game/ParagonMorigesh/Characters/Heroes/Morigesh/Animations"),
+		1.05f, TEXT("Idle"), TEXT("Jog_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Left"), TEXT("Jog_Right"),
+		TEXT("PrimaryAttack_A_Slow"), TEXT("Ability_R"), TEXT("Cast"), TEXT("HitReact_Front"), TEXT("Death")
+	};
+	static const FFabEnemySpec MorigeshDarkHeart{
+		TEXT("/Game/ParagonMorigesh/Characters/Heroes/Morigesh/Skins/DarkHeart/Meshes/Morigesh_DarkHeart"),
+		TEXT("/Game/ParagonMorigesh/Characters/Heroes/Morigesh/Animations"),
+		1.05f, TEXT("Idle"), TEXT("Jog_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Left"), TEXT("Jog_Right"),
+		TEXT("PrimaryAttack_A_Slow"), TEXT("Ability_R"), TEXT("Cast"), TEXT("HitReact_Front"), TEXT("Death")
+	};
+	static const FFabEnemySpec MorigeshNorthern{
+		TEXT("/Game/ParagonMorigesh/Characters/Heroes/Morigesh/Skins/NorthernMystic/Meshes/Morigesh_NorthernMystic"),
+		TEXT("/Game/ParagonMorigesh/Characters/Heroes/Morigesh/Animations"),
+		1.05f, TEXT("Idle"), TEXT("Jog_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Left"), TEXT("Jog_Right"),
+		TEXT("PrimaryAttack_A_Slow"), TEXT("Ability_R"), TEXT("Cast"), TEXT("HitReact_Front"), TEXT("Death")
+	};
+
+	static const FFabEnemySpec DawnSuper{
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Meshes/Minion_Lane_Super_Core_Dawn"),
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Animations/Super"),
+		1.25f, nullptr, TEXT("Combat_Jog_Fwd_Alt"), nullptr, nullptr, nullptr, TEXT("Attack_A"), TEXT("Attack_B"), nullptr, TEXT("Hit_React_Front"), TEXT("Death_Front")
+	};
+	static const FFabEnemySpec DuskSuper{
+		TEXT("/Game/ParagonMinions/Characters/Minions/Dusk_Minions/Meshes/Minion_Lane_Super_Core_Dusk"),
+		TEXT("/Game/ParagonMinions/Characters/Minions/Down_Minions/Animations/Super"),
+		1.25f, nullptr, TEXT("Combat_Jog_Fwd_Alt"), nullptr, nullptr, nullptr, TEXT("Attack_A_Dusk"), TEXT("Attack_B_Dusk"), nullptr, TEXT("Hit_React_Front"), TEXT("Death_Front")
+	};
+	static const FFabEnemySpec BrassCharger{
+		TEXT("/Game/CityofBrass_Enemies/Meshes/Enemy/Charger/Charger"),
+		TEXT("/Game/CityofBrass_Enemies/Meshes/Enemy/Charger/Animation"),
+		1.30f, TEXT("Charger_Alert_Ilde"), TEXT("Charger_Alert_run"), TEXT("Charger_Passive_Walk"), nullptr, nullptr,
+		TEXT("Charger_Alert_Attack_Close"), TEXT("Charger_Alert_ChargeAttack"), TEXT("Charger_Aggro"), TEXT("Charger_Flinch_back"), TEXT("Charger_Death")
+	};
+	static const FFabEnemySpec BuffRedJuggernaut{
+		TEXT("/Game/ParagonMinions/Characters/Buff/Buff_Red/Meshes/Buff_Red"),
+		TEXT("/Game/ParagonMinions/Characters/Buff/Buff_Red/Animations"),
+		1.24f, TEXT("Idle"), TEXT("Run_Fwd"), TEXT("Run_Back"), TEXT("Run_Left"), TEXT("Run_Right"),
+		TEXT("Attack_Punch_01"), TEXT("Attack_BigSmash"), TEXT("Attack_Uppercut"), TEXT("Hit_Front"), TEXT("Death_Fwd")
+	};
+	static const FFabEnemySpec PrimeHelixGolem{
+		TEXT("/Game/ParagonMinions/Characters/Minions/Prime_Helix/Meshes/Prime_Helix"),
+		TEXT("/Game/ParagonMinions/Characters/Minions/Prime_Helix/Animations"),
+		0.72f, TEXT("Idle"), TEXT("Idle"), nullptr, nullptr, nullptr,
+		TEXT("Primary_Fire"), TEXT("Attack_Special_1"), TEXT("Attack_Special_2"), TEXT("Hitreact_Fwd"), TEXT("Death")
+	};
+
+	static const FFabEnemySpec EliteRampage{
+		TEXT("/Game/ParagonRampage/Characters/Heroes/Rampage/Meshes/Rampage"),
+		TEXT("/Game/ParagonRampage/Characters/Heroes/Rampage/Animations"),
+		1.12f, TEXT("Idle"), TEXT("Ability_RipNToss_Jog_Fwd"), TEXT("Ability_RipNToss_Jog_Bwd"), TEXT("Ability_RipNToss_Jog_Lft"), TEXT("Ability_RipNToss_Jog_Rgt"),
+		TEXT("Attack_Melee_A"), TEXT("Ability_RMB_Smash"), TEXT("Cast"), nullptr, TEXT("Death_A")
+	};
+	static const FFabEnemySpec EliteRampageElemental{
+		TEXT("/Game/ParagonRampage/Characters/Heroes/Rampage/Skins/Tier2/Elemental/Meshes/Rampage_Elemental"),
+		TEXT("/Game/ParagonRampage/Characters/Heroes/Rampage/Animations"),
+		1.14f, TEXT("Idle"), TEXT("Ability_RipNToss_Jog_Fwd"), TEXT("Ability_RipNToss_Jog_Bwd"), TEXT("Ability_RipNToss_Jog_Lft"), TEXT("Ability_RipNToss_Jog_Rgt"),
+		TEXT("Attack_Melee_A"), TEXT("Ability_RMB_Smash"), TEXT("Cast"), nullptr, TEXT("Death_A")
+	};
+	static const FFabEnemySpec EliteGruxWarchief{
+		TEXT("/Game/ParagonGrux/Characters/Heroes/Grux/Skins/Tier_1/War_Chief/Meshes/GruxWarchief"),
+		TEXT("/Game/ParagonGrux/Characters/Heroes/Grux/Animations"),
+		1.15f, TEXT("Idle"), TEXT("Run_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Lft"), nullptr,
+		TEXT("PrimaryAttack_LA"), TEXT("PrimaryAttack_FourStrikes"), TEXT("Cast"), TEXT("HitReact_Front"), TEXT("Death_A")
+	};
+	static const FFabEnemySpec EliteSevarogBloodred{
+		TEXT("/Game/ParagonSevarog/Characters/Heroes/Sevarog/Skins/Tier_1/Sevarog_Red/Meshes/SevarogBloodred"),
+		TEXT("/Game/ParagonSevarog/Characters/Heroes/Sevarog/Animations"),
+		1.15f, TEXT("Idle"), TEXT("Run_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Left"), TEXT("Jog_Right"),
+		TEXT("Swing1_Medium"), TEXT("Swing2_FAST_v2"), TEXT("Cast"), TEXT("Hitreact_Front"), TEXT("Death_front")
+	};
+
+	static const FFabEnemySpec BossAuroraEmpress{
+		TEXT("/Game/ParagonAurora/Characters/Heroes/Aurora/Skins/GlacialEmpress/Meshes/Aurora_GlacialEmpress"),
+		TEXT("/Game/ParagonAurora/Characters/Heroes/Aurora/Animations"),
+		1.68f, TEXT("Idle"), TEXT("Ability_RMB_Fwd"), TEXT("Jog_Bwd"), TEXT("Ability_RMB_Left"), TEXT("Ability_RMB_Right"),
+		TEXT("Cast"), TEXT("Ability_R"), TEXT("Cast"), TEXT("HitReact_Front"), TEXT("Death")
+	};
+	static const FFabEnemySpec BossAuroraBase{
+		TEXT("/Game/ParagonAurora/Characters/Heroes/Aurora/Meshes/Aurora"),
+		TEXT("/Game/ParagonAurora/Characters/Heroes/Aurora/Animations"),
+		1.68f, TEXT("Idle"), TEXT("Ability_RMB_Fwd"), TEXT("Jog_Bwd"), TEXT("Ability_RMB_Left"), TEXT("Ability_RMB_Right"),
+		TEXT("Cast"), TEXT("Ability_R"), TEXT("Cast"), TEXT("HitReact_Front"), TEXT("Death")
+	};
+	static const FFabEnemySpec BossKhaimeraPelt{
+		TEXT("/Game/ParagonKhaimera/Characters/Heroes/Khaimera/Skins/Tier2/GruxPelt/Meshes/Khaimera_GruxPelt"),
+		TEXT("/Game/ParagonKhaimera/Characters/Heroes/Khaimera/Animations"),
+		1.72f, TEXT("Idle"), TEXT("Jog_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Left"), TEXT("Jog_Right"),
+		TEXT("Cast"), TEXT("Cast"), TEXT("Cast"), TEXT("HitReact_Front"), TEXT("Death_A")
+	};
+	static const FFabEnemySpec BossKhaimeraBase{
+		TEXT("/Game/ParagonKhaimera/Characters/Heroes/Khaimera/Meshes/Khaimera"),
+		TEXT("/Game/ParagonKhaimera/Characters/Heroes/Khaimera/Animations"),
+		1.72f, TEXT("Idle"), TEXT("Jog_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Left"), TEXT("Jog_Right"),
+		TEXT("Cast"), TEXT("Cast"), TEXT("Cast"), TEXT("HitReact_Front"), TEXT("Death_A")
+	};
+	static const FFabEnemySpec BossSevarogChronos{
+		TEXT("/Game/ParagonSevarog/Characters/Heroes/Sevarog/Skins/Tier_1/Sevarog_Chronos/Meshes/SevarogChronos"),
+		TEXT("/Game/ParagonSevarog/Characters/Heroes/Sevarog/Animations"),
+		1.72f, TEXT("Idle"), TEXT("Run_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Left"), TEXT("Jog_Right"),
+		TEXT("Swing1_Medium"), TEXT("Swing2_FAST_v2"), TEXT("Cast"), TEXT("Hitreact_Front"), TEXT("Death_front")
+	};
+	static const FFabEnemySpec BossSevarogBase{
+		TEXT("/Game/ParagonSevarog/Characters/Heroes/Sevarog/Meshes/Sevarog"),
+		TEXT("/Game/ParagonSevarog/Characters/Heroes/Sevarog/Animations"),
+		1.72f, TEXT("Idle"), TEXT("Run_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Left"), TEXT("Jog_Right"),
+		TEXT("Swing1_Medium"), TEXT("Swing2_FAST_v2"), TEXT("Cast"), TEXT("Hitreact_Front"), TEXT("Death_front")
+	};
+	static const FFabEnemySpec BossGruxMolten{
+		TEXT("/Game/ParagonGrux/Characters/Heroes/Grux/Skins/Tier_2/Grux_Beetle_Molten/Meshes/GruxMolten"),
+		TEXT("/Game/ParagonGrux/Characters/Heroes/Grux/Animations"),
+		1.72f, TEXT("Idle"), TEXT("Run_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Lft"), nullptr,
+		TEXT("PrimaryAttack_LA"), TEXT("PrimaryAttack_FourStrikes"), TEXT("Ultimate_Roar"), TEXT("HitReact_Front"), TEXT("Death_A")
+	};
+	static const FFabEnemySpec BossGruxBase{
+		TEXT("/Game/ParagonGrux/Characters/Heroes/Grux/Meshes/Grux"),
+		TEXT("/Game/ParagonGrux/Characters/Heroes/Grux/Animations"),
+		1.72f, TEXT("Idle"), TEXT("Run_Fwd"), TEXT("Jog_Bwd"), TEXT("Jog_Lft"), nullptr,
+		TEXT("PrimaryAttack_LA"), TEXT("PrimaryAttack_FourStrikes"), TEXT("Ultimate_Roar"), TEXT("HitReact_Front"), TEXT("Death_A")
+	};
+
+	bUsingSkeletalPresentation = false;
+
+	if (MobKind == EAetheriaMobKind::Boss)
+	{
+		switch (Wid)
+		{
+		case EAetheriaWorldId::Bastion:
+			bUsingSkeletalPresentation = TryBindList(this, HalfH, { BossAuroraEmpress, BossAuroraBase });
+			break;
+		case EAetheriaWorldId::RuinsTemple:
+			bUsingSkeletalPresentation = TryBindList(this, HalfH, { BossKhaimeraPelt, BossKhaimeraBase });
+			break;
+		case EAetheriaWorldId::VoidRealm:
+			bUsingSkeletalPresentation = TryBindList(this, HalfH, { BossSevarogChronos, BossSevarogBase });
+			break;
+		case EAetheriaWorldId::BossSanctum:
+		default:
+			bUsingSkeletalPresentation = TryBindList(this, HalfH, { BossGruxMolten, BossGruxBase });
+			break;
+		}
+		if (!bUsingSkeletalPresentation)
+		{
+			const TCHAR* Pkg = AetheriaWorldDirector::BossPackageForWorld(Wid);
+			const TCHAR* Hero = AetheriaWorldDirector::BossHeroForWorld(Wid);
+			bUsingSkeletalPresentation = UAetheriaAnimInstance::BindBestPresentation(
+				this, HalfH, { FString(Pkg) }, FString(Hero),
+				TEXT("/Game/Characters/BossArchon"), TEXT("SKM_BossArchon"));
+		}
+	}
+	else if (bIsEliteLeader)
+	{
+		// Distinct Elite Champions per world (Rampage / GruxWarchief / Elemental Rampage / Bloodred Sevarog)
+		switch (Wid)
+		{
+		case EAetheriaWorldId::Bastion:
+			bUsingSkeletalPresentation = TryBindList(this, HalfH, { EliteRampage, BuffRedJuggernaut });
+			break;
+		case EAetheriaWorldId::RuinsTemple:
+			bUsingSkeletalPresentation = TryBindList(this, HalfH, { EliteGruxWarchief, BossGruxBase, BuffRedJuggernaut });
+			break;
+		case EAetheriaWorldId::VoidRealm:
+			bUsingSkeletalPresentation = TryBindList(this, HalfH, { EliteRampageElemental, EliteRampage, BuffRedJuggernaut });
+			break;
+		case EAetheriaWorldId::BossSanctum:
+		default:
+			bUsingSkeletalPresentation = TryBindList(this, HalfH, { EliteSevarogBloodred, BossSevarogBase, BuffRedJuggernaut });
+			break;
+		}
+	}
+	else if (MobKind == EAetheriaMobKind::Swarm)
+	{
+		switch (Wid)
+		{
+		case EAetheriaWorldId::Bastion:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { DawnMelee, CorpseSwordsman, BuffBlackPredator })
+				: TryBindList(this, HalfH, { CorpseSwordsman, DawnMelee, BuffBlackPredator });
+			break;
+		case EAetheriaWorldId::RuinsTemple:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { BuffBlackPredator, BuffGreenStalker, DawnMelee })
+				: TryBindList(this, HalfH, { BuffGreenStalker, BuffBlackPredator, DawnMelee });
+			break;
+		case EAetheriaWorldId::VoidRealm:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { DuskMelee, RogVoidShade, BuffBlackPredator })
+				: TryBindList(this, HalfH, { RogVoidShade, DuskMelee, BuffBlackPredator });
+			break;
+		case EAetheriaWorldId::BossSanctum:
+		default:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { CorpseSwordsman, BuffBlackPredator, DuskMelee })
+				: TryBindList(this, HalfH, { BuffBlackPredator, CorpseSwordsman, DuskMelee });
+			break;
+		}
+		if (!bUsingSkeletalPresentation)
+		{
+			bUsingSkeletalPresentation = UAetheriaAnimInstance::BindSkeletalPresentation(
+				this, TEXT("/Game/Characters/SwarmReaper"), TEXT("SKM_SwarmReaper"), HalfH);
+		}
+	}
+	else if (MobKind == EAetheriaMobKind::Ranged)
+	{
+		switch (Wid)
+		{
+		case EAetheriaWorldId::Bastion:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { DawnRanged, BuffBlueArcane, MorigeshWitch })
+				: TryBindList(this, HalfH, { BuffBlueArcane, DawnRanged, MorigeshWitch });
+			break;
+		case EAetheriaWorldId::RuinsTemple:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { MorigeshWitch, BuffBlueArcane, DawnRanged })
+				: TryBindList(this, HalfH, { BuffBlueArcane, MorigeshWitch, DawnRanged });
+			break;
+		case EAetheriaWorldId::VoidRealm:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { DuskRanged, MorigeshDarkHeart, BuffBlueArcane })
+				: TryBindList(this, HalfH, { MorigeshDarkHeart, DuskRanged, BuffBlueArcane });
+			break;
+		case EAetheriaWorldId::BossSanctum:
+		default:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { MorigeshNorthern, MorigeshWitch, BuffBlueArcane })
+				: TryBindList(this, HalfH, { BuffBlueArcane, MorigeshNorthern, DuskRanged });
+			break;
+		}
+		if (!bUsingSkeletalPresentation)
+		{
+			bUsingSkeletalPresentation = UAetheriaAnimInstance::BindSkeletalPresentation(
+				this, TEXT("/Game/Characters/RangedLich"), TEXT("SKM_RangedLich"), HalfH);
+		}
+	}
+	else if (MobKind == EAetheriaMobKind::Bruiser)
+	{
+		switch (Wid)
+		{
+		case EAetheriaWorldId::Bastion:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { DawnSuper, BrassCharger, BuffRedJuggernaut })
+				: TryBindList(this, HalfH, { BrassCharger, DawnSuper, BuffRedJuggernaut });
+			break;
+		case EAetheriaWorldId::RuinsTemple:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { BuffRedJuggernaut, BrassCharger, DawnSuper })
+				: TryBindList(this, HalfH, { BrassCharger, BuffRedJuggernaut, DawnSuper });
+			break;
+		case EAetheriaWorldId::VoidRealm:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { DuskSuper, BuffRedJuggernaut, BuffBlackPredator })
+				: TryBindList(this, HalfH, { BuffRedJuggernaut, DuskSuper, BuffBlackPredator });
+			break;
+		case EAetheriaWorldId::BossSanctum:
+		default:
+			bUsingSkeletalPresentation = (Variant == 0)
+				? TryBindList(this, HalfH, { BuffRedJuggernaut, PrimeHelixGolem, BrassCharger })
+				: TryBindList(this, HalfH, { PrimeHelixGolem, BuffRedJuggernaut, BrassCharger });
+			break;
+		}
+		if (!bUsingSkeletalPresentation)
+		{
+			bUsingSkeletalPresentation = UAetheriaAnimInstance::BindBestPresentation(
+				this, HalfH, { TEXT("/Game/ParagonGrux") }, TEXT("Grux"),
+				TEXT("/Game/Characters/BruiserJuggernaut"), TEXT("SKM_BruiserJuggernaut"));
+		}
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[Aetheria] Mob bind world=%d kind=%d elite=%d skeletal=%d mesh=%s"),
+		static_cast<int32>(Wid),
+		static_cast<int32>(MobKind),
+		bIsEliteLeader ? 1 : 0,
+		bUsingSkeletalPresentation ? 1 : 0,
+		*GetNameSafe(GetMesh() ? GetMesh()->GetSkeletalMeshAsset() : nullptr));
 	if (bUsingSkeletalPresentation)
 	{
 			if (BodyMeshComponent) { BodyMeshComponent->SetVisibility(false); BodyMeshComponent->SetHiddenInGame(true); }
@@ -919,6 +1480,9 @@ void AAetheriaMobCharacter::UpdateVisualSilhouette()
 			if (FinMesh2) { FinMesh2->SetVisibility(false); FinMesh2->SetHiddenInGame(true); }
 			if (FinMesh3) { FinMesh3->SetVisibility(false); FinMesh3->SetHiddenInGame(true); }
 			if (FinMesh4) { FinMesh4->SetVisibility(false); FinMesh4->SetHiddenInGame(true); }
+			if (OrbMesh1) { OrbMesh1->SetVisibility(false); OrbMesh1->SetHiddenInGame(true); }
+			if (OrbMesh2) { OrbMesh2->SetVisibility(false); OrbMesh2->SetHiddenInGame(true); }
+			if (OrbMesh3) { OrbMesh3->SetVisibility(false); OrbMesh3->SetHiddenInGame(true); }
 			return;
 	}
 
@@ -992,9 +1556,9 @@ void AAetheriaMobCharacter::UpdateVisualSilhouette()
 		BodyMeshComponent->SetRelativeScale3D(BaseMeshScale);
 		if (MobKind == EAetheriaMobKind::Boss)
 		{
-			if (OrbMesh1) { OrbMesh1->SetVisibility(true); OrbMesh1->SetRelativeScale3D(FVector(0.65f)); }
-			if (OrbMesh2) { OrbMesh2->SetVisibility(true); OrbMesh2->SetRelativeScale3D(FVector(0.65f)); }
-			if (OrbMesh3) { OrbMesh3->SetVisibility(true); OrbMesh3->SetRelativeScale3D(FVector(0.65f)); }
+			if (OrbMesh1) { OrbMesh1->SetVisibility(true); OrbMesh1->SetHiddenInGame(false); OrbMesh1->SetRelativeScale3D(FVector(0.65f)); }
+			if (OrbMesh2) { OrbMesh2->SetVisibility(true); OrbMesh2->SetHiddenInGame(false); OrbMesh2->SetRelativeScale3D(FVector(0.65f)); }
+			if (OrbMesh3) { OrbMesh3->SetVisibility(true); OrbMesh3->SetHiddenInGame(false); OrbMesh3->SetRelativeScale3D(FVector(0.65f)); }
 		}
 		return;
 	}
@@ -1137,16 +1701,19 @@ void AAetheriaMobCharacter::UpdateVisualSilhouette()
 		if (OrbMesh1)
 		{
 			OrbMesh1->SetVisibility(true);
+			OrbMesh1->SetHiddenInGame(false);
 			OrbMesh1->SetRelativeScale3D(FVector(0.65f, 0.65f, 0.65f));
 		}
 		if (OrbMesh2)
 		{
 			OrbMesh2->SetVisibility(true);
+			OrbMesh2->SetHiddenInGame(false);
 			OrbMesh2->SetRelativeScale3D(FVector(0.65f, 0.65f, 0.65f));
 		}
 		if (OrbMesh3)
 		{
 			OrbMesh3->SetVisibility(true);
+			OrbMesh3->SetHiddenInGame(false);
 			OrbMesh3->SetRelativeScale3D(FVector(0.65f, 0.65f, 0.65f));
 		}
 		break;
@@ -1158,15 +1725,74 @@ void AAetheriaMobCharacter::UpdateVisualSilhouette()
 
 void AAetheriaMobCharacter::UpdateMaterials()
 {
+	auto GetRoleRimColor = [this](float& OutBoost) -> FLinearColor
+	{
+		if (MobKind == EAetheriaMobKind::Boss)
+		{
+			OutBoost = 2.85f;
+			return FLinearColor(1.0f, 0.48f, 0.16f, 1.0f);
+		}
+		if (bIsEliteLeader)
+		{
+			OutBoost = 2.65f;
+			return FLinearColor(1.0f, 0.78f, 0.24f, 1.0f);
+		}
+		if (MobKind == EAetheriaMobKind::Bruiser)
+		{
+			OutBoost = 2.35f;
+			return FLinearColor(1.0f, 0.32f, 0.14f, 1.0f);
+		}
+		if (MobKind == EAetheriaMobKind::Ranged)
+		{
+			OutBoost = 2.35f;
+			return FLinearColor(0.36f, 0.84f, 1.0f, 1.0f);
+		}
+		OutBoost = 2.15f;
+		return FLinearColor(1.0f, 0.56f, 0.22f, 1.0f);
+	};
+
+	if (bUsingSkeletalPresentation && GetMesh())
+	{
+		float RimBoost = 2.15f;
+		const FLinearColor RimColor = GetRoleRimColor(RimBoost);
+		if (!SkeletalHitFlashOverlay)
+		{
+			UMaterialInterface* RimBase = UAetheriaMaterialLibrary::GetMobRimOverlayMaterial(this);
+			if (RimBase && RimBase->CheckMaterialUsage_Concurrent(MATUSAGE_SkeletalMesh))
+			{
+				SkeletalHitFlashOverlay = UAetheriaMaterialLibrary::CreateTintedDynamicMaterial(
+					this, RimBase, RimColor, RimColor, RimBoost, 1.0f);
+			}
+		}
+		if (SkeletalHitFlashOverlay)
+		{
+			SkeletalHitFlashOverlay->SetVectorParameterValue(FName("EmissiveColor"), RimColor);
+			SkeletalHitFlashOverlay->SetScalarParameterValue(FName("EmissiveBoost"), RimBoost);
+			SkeletalHitFlashOverlay->SetVectorParameterValue(FName("BaseColor"), RimColor);
+			SkeletalHitFlashOverlay->SetScalarParameterValue(FName("BaseLift"), 0.12f);
+			SkeletalHitFlashOverlay->SetVectorParameterValue(FName("HitColor"), FLinearColor(1.0f, 0.35f, 0.14f, 1.0f));
+			SkeletalHitFlashOverlay->SetScalarParameterValue(FName("HitFlash"), 0.0f);
+			if (SkeletalHitFlashOverlay->GetBaseMaterial() && SkeletalHitFlashOverlay->GetBaseMaterial()->GetName().Contains(TEXT("MobRim")))
+			{
+				GetMesh()->SetOverlayMaterial(SkeletalHitFlashOverlay);
+			}
+		}
+		return;
+	}
+
 	FString TexStem;
-	float EmissiveBoost = 0.45f;
-	FLinearColor BaseTint = BodyColor;
+	float EmissiveBoost = 1.15f;
+	FLinearColor BaseTint(
+		FMath::Max(BodyColor.R, 0.12f),
+		FMath::Max(BodyColor.G, 0.12f),
+		FMath::Max(BodyColor.B, 0.16f),
+		1.0f);
 
 	if (MobKind == EAetheriaMobKind::Boss)
 	{
 		const int32 LocClamped = FMath::Clamp(LocationIndex, 0, 9);
 		TexStem = FString::Printf(TEXT("Boss_Loc%02d"), LocClamped);
-		EmissiveBoost = 0.55f;
+		EmissiveBoost = 1.80f;
 		BaseTint = FLinearColor::White;
 	}
 	else if (MobKind == EAetheriaMobKind::Swarm)
@@ -1255,6 +1881,7 @@ void AAetheriaMobCharacter::Tick(float DeltaTime)
 	// Timers
 	AttackAnimTimer = FMath::Max(0.0f, AttackAnimTimer - DeltaTime);
 	HitFlashTimer = FMath::Max(0.0f, HitFlashTimer - DeltaTime);
+	HitReactCooldown = FMath::Max(0.0f, HitReactCooldown - DeltaTime);
 	HitRecoilTimer = FMath::Max(0.0f, HitRecoilTimer - DeltaTime);
 	LandingSquashTimer = FMath::Max(0.0f, LandingSquashTimer - DeltaTime);
 	SlamSnapTimer = FMath::Max(0.0f, SlamSnapTimer - DeltaTime);
@@ -1323,36 +1950,71 @@ void AAetheriaMobCharacter::Tick(float DeltaTime)
 	float EmergenceZ = 0.0f;
 	if (EmergenceTimer > 0.0f)
 	{
-		const float Duration = FMath::Max(0.05f, EmergenceTimer + DeltaTime);
 		EmergenceTimer -= DeltaTime;
-		const float Alpha = FMath::Clamp(1.0f - (EmergenceTimer / FMath::Max(0.05f, Duration + (EmergenceTimer))), 0.0f, 1.0f);
-		// Recompute alpha from remaining vs kind duration stored in the current timer start is awkward;
-		// use a smooth step based on remaining time relative to a generous max.
-		const float KindDur = (MobKind == EAetheriaMobKind::Boss) ? 2.2f : (MobKind == EAetheriaMobKind::Bruiser ? 0.95f : 0.90f);
+		const bool bBoss = (MobKind == EAetheriaMobKind::Boss);
+		const bool bElite = bIsEliteLeader && !bBoss;
+		float KindDur = 0.70f;
+		if (bBoss)
+		{
+			KindDur = 2.2f;
+		}
+		else if (bElite)
+		{
+			KindDur = 1.05f;
+		}
+		else if (MobKind == EAetheriaMobKind::Bruiser)
+		{
+			KindDur = 0.95f;
+		}
+		else if (MobKind == EAetheriaMobKind::Ranged)
+		{
+			KindDur = 0.90f;
+		}
+		else if (MobKind == EAetheriaMobKind::Swarm)
+		{
+			KindDur = 0.85f;
+		}
+
 		const float A = FMath::Clamp(1.0f - (EmergenceTimer / KindDur), 0.0f, 1.0f);
 		const float Ease = A * A * (3.0f - 2.0f * A);
-		if (MobKind == EAetheriaMobKind::Bruiser && !bIsEliteLeader)
+		if (bBoss)
+		{
+			// Boss stands in place during intro roar; do not burrow.
+		}
+		else if (bElite)
 		{
 			const FVector P = GetActorLocation();
-			SetActorLocation(FVector(P.X, P.Y, FMath::Lerp(EntranceStartZ + 900.0f, EntranceStartZ, Ease)));
+			SetActorLocation(FVector(P.X, P.Y, FMath::Lerp(EntranceStartZ - 160.0f, EntranceStartZ, Ease)), false, nullptr, ETeleportType::TeleportPhysics);
+		}
+		else if (MobKind == EAetheriaMobKind::Swarm)
+		{
+			const FVector P = GetActorLocation();
+			SetActorLocation(FVector(P.X, P.Y, FMath::Lerp(EntranceStartZ - 200.0f, EntranceStartZ, Ease)), false, nullptr, ETeleportType::TeleportPhysics);
+		}
+		else if (MobKind == EAetheriaMobKind::Bruiser)
+		{
+			const FVector P = GetActorLocation();
+			SetActorLocation(FVector(P.X, P.Y, FMath::Lerp(EntranceStartZ + 900.0f, EntranceStartZ, Ease)), false, nullptr, ETeleportType::TeleportPhysics);
 			if (EmergenceTimer <= 0.0f)
 			{
 				UAetheriaPackVFX::PlaySpawnEntrance(this, MobKind, FVector(P.X, P.Y, EntranceStartZ), false, false);
 			}
 		}
-		else if (MobKind == EAetheriaMobKind::Ranged && !bIsEliteLeader)
+		else if (MobKind == EAetheriaMobKind::Ranged)
 		{
 			if (GetMesh() && A > 0.35f)
 			{
 				GetMesh()->SetVisibility(true, true);
 			}
 		}
-		else
-		{
-			EmergenceZ = FMath::Lerp(-200.0f, 0.0f, Ease);
-		}
+
 		if (EmergenceTimer <= 0.0f && bEntranceLocked)
 		{
+			if (bElite || MobKind == EAetheriaMobKind::Swarm || MobKind == EAetheriaMobKind::Bruiser)
+			{
+				const FVector P = GetActorLocation();
+				SetActorLocation(FVector(P.X, P.Y, EntranceStartZ), false, nullptr, ETeleportType::TeleportPhysics);
+			}
 			bEntranceLocked = false;
 			if (GetMesh()) GetMesh()->SetVisibility(true, true);
 			if (UCharacterMovementComponent* Mov = GetCharacterMovement())
@@ -1362,10 +2024,51 @@ void AAetheriaMobCharacter::Tick(float DeltaTime)
 		}
 	}
 
+	const float FlashStrength = FMath::Clamp(HitFlashTimer / 0.22f, 0.0f, 1.0f);
 	if (DynamicBodyMaterial)
 	{
-		const float FlashStrength = FMath::Clamp(HitFlashTimer / 0.22f, 0.0f, 1.0f);
 		DynamicBodyMaterial->SetScalarParameterValue(FName("HitFlash"), FlashStrength);
+	}
+	if (bUsingSkeletalPresentation && GetMesh())
+	{
+		if (SkeletalHitFlashOverlay)
+		{
+			const bool bPersistentRim = SkeletalHitFlashOverlay->GetBaseMaterial()
+				&& SkeletalHitFlashOverlay->GetBaseMaterial()->GetName().Contains(TEXT("MobRim"));
+			if (bPersistentRim)
+			{
+				SkeletalHitFlashOverlay->SetScalarParameterValue(FName("HitFlash"), FlashStrength);
+				if (bIsFrozen)
+				{
+					SkeletalHitFlashOverlay->SetVectorParameterValue(FName("EmissiveColor"), FLinearColor(0.35f, 0.92f, 1.0f, 1.0f));
+					SkeletalHitFlashOverlay->SetScalarParameterValue(FName("EmissiveBoost"), 3.0f);
+				}
+				if (GetMesh()->GetOverlayMaterial() != SkeletalHitFlashOverlay)
+				{
+					GetMesh()->SetOverlayMaterial(SkeletalHitFlashOverlay);
+				}
+			}
+			else if (FlashStrength > 0.01f)
+			{
+				SkeletalHitFlashOverlay->SetScalarParameterValue(FName("EmissiveBoost"), 5.0f * FlashStrength);
+				SkeletalHitFlashOverlay->SetScalarParameterValue(FName("Opacity"), 0.55f * FlashStrength);
+				if (GetMesh()->GetOverlayMaterial() != SkeletalHitFlashOverlay)
+				{
+					GetMesh()->SetOverlayMaterial(SkeletalHitFlashOverlay);
+				}
+			}
+			else if (GetMesh()->GetOverlayMaterial() != nullptr)
+			{
+				GetMesh()->SetOverlayMaterial(nullptr);
+			}
+		}
+		else
+		{
+			GetMesh()->SetScalarParameterValueOnMaterials(FName("HitFlash"), FlashStrength);
+			GetMesh()->SetVectorParameterValueOnMaterials(
+				FName("EmissiveColor"),
+				FVector(1.0f * FlashStrength, 0.28f * FlashStrength, 0.14f * FlashStrength));
+		}
 	}
 
 	// Procedural Animation & Kinematics
@@ -1391,7 +2094,7 @@ void AAetheriaMobCharacter::Tick(float DeltaTime)
 	if (bDying)
 	{
 		DeathDissolveTimer = FMath::Max(0.0f, DeathDissolveTimer - DeltaTime);
-		DeathAlpha = 1.0f - FMath::Clamp(DeathDissolveTimer / 0.95f, 0.0f, 1.0f);
+		DeathAlpha = 1.0f - FMath::Clamp(DeathDissolveTimer / 1.45f, 0.0f, 1.0f);
 
 		// Directional knockback topple away from LastInstigator
 		const float FallPhase = FMath::Clamp(DeathAlpha / 0.55f, 0.0f, 1.0f);
@@ -1615,8 +2318,11 @@ void AAetheriaMobCharacter::Tick(float DeltaTime)
 		{
 			if (Orbs[oi])
 			{
-				Orbs[oi]->SetVisibility(bShowOrbs);
-				if (bShowOrbs)
+				const bool bOrbHasMat = (Orbs[oi]->GetMaterial(0) != nullptr);
+				const bool bShow = bShowOrbs && (!bUsingSkeletalPresentation || bOrbHasMat);
+				Orbs[oi]->SetVisibility(bShow);
+				Orbs[oi]->SetHiddenInGame(!bShow);
+				if (bShow)
 				{
 					Orbs[oi]->SetWorldLocation(Center + FVector(FMath::Cos(Rad + PhaseOffsets[oi]) * OrbitDist, FMath::Sin(Rad + PhaseOffsets[oi]) * OrbitDist, 0.0f));
 					Orbs[oi]->SetRelativeScale3D(FVector(OrbScale));
@@ -1880,6 +2586,18 @@ void AAetheriaMobCharacter::ServerTickAI(float DeltaTime)
 		}
 	}
 
+	// Ensure spawned mobs always have an AIController so AddMovementInput drives CharacterMovement.
+	if (!GetController())
+	{
+		SpawnDefaultController();
+	}
+
+	// Emergence blocks movement and melee/ranged attacks until <= 0
+	if (EmergenceTimer > 0.0f)
+	{
+		return;
+	}
+
 	// Movement speed scaling (Rift breach burst, Prism wall slow)
 	if (GetCharacterMovement())
 	{
@@ -1897,13 +2615,47 @@ void AAetheriaMobCharacter::ServerTickAI(float DeltaTime)
 
 	if (Dist > AttackRangeUU * 0.85f)
 	{
-		AddMovementInput(MoveDir, 1.0f);
+		FVector SepVec = FVector::ZeroVector;
+		for (TActorIterator<AAetheriaMobCharacter> MobIt(GetWorld()); MobIt; ++MobIt)
+		{
+			AAetheriaMobCharacter* Other = *MobIt;
+			if (!Other || Other == this || Other->HP <= 0.0f || Other->IsDying()) continue;
+			FVector Delta = MyLoc - Other->GetActorLocation();
+			Delta.Z = 0.0f;
+			const float D = Delta.Size();
+			const float MinSep = (MobKind == EAetheriaMobKind::Boss || Other->MobKind == EAetheriaMobKind::Boss) ? 240.0f : 195.0f;
+			if (D > 1.0f && D < MinSep)
+			{
+				SepVec += (Delta / D) * ((MinSep - D) / MinSep);
+			}
+			else if (D <= 1.0f)
+			{
+				SepVec += FVector(FMath::FRandRange(-1.0f, 1.0f), FMath::FRandRange(-1.0f, 1.0f), 0.0f).GetSafeNormal();
+			}
+		}
+		const FVector SteerDir = SepVec.IsNearlyZero() ? MoveDir : (MoveDir + SepVec * 1.15f).GetSafeNormal();
+		AddMovementInput(SteerDir, 1.0f);
 	}
-
-	// Emergence blocks melee/ranged attacks until <= 0
-	if (EmergenceTimer > 0.0f)
+	else
 	{
-		return;
+		FVector SepVec = FVector::ZeroVector;
+		for (TActorIterator<AAetheriaMobCharacter> MobIt(GetWorld()); MobIt; ++MobIt)
+		{
+			AAetheriaMobCharacter* Other = *MobIt;
+			if (!Other || Other == this || Other->HP <= 0.0f || Other->IsDying()) continue;
+			FVector Delta = MyLoc - Other->GetActorLocation();
+			Delta.Z = 0.0f;
+			const float D = Delta.Size();
+			const float MinSep = (MobKind == EAetheriaMobKind::Boss || Other->MobKind == EAetheriaMobKind::Boss) ? 240.0f : 195.0f;
+			if (D > 1.0f && D < MinSep)
+			{
+				SepVec += (Delta / D) * ((MinSep - D) / MinSep);
+			}
+		}
+		if (!SepVec.IsNearlyZero())
+		{
+			AddMovementInput(SepVec.GetSafeNormal(), 0.75f);
+		}
 	}
 
 	// Ranged burning has -25% attack speed (longer cooldown)
@@ -1937,7 +2689,16 @@ void AAetheriaMobCharacter::ServerTickAI(float DeltaTime)
 
 void AAetheriaMobCharacter::ExecuteMeleeAttack(AAetheriaWizardCharacter* TargetWizard)
 {
-	PlayPresentationAction(static_cast<uint8>(EAetheriaAnimAction::AttackMelee));
+	const EAetheriaAnimAction SwingAnim = ((MeleeSwingIndex++ & 1) == 0)
+		? EAetheriaAnimAction::AttackMelee
+		: EAetheriaAnimAction::AttackSlam;
+	PlayPresentationAction(static_cast<uint8>(SwingAnim));
+
+	const TCHAR* MeleeSfx = (MobKind == EAetheriaMobKind::Boss)
+		? TEXT("SFX_Boss_Melee")
+		: ((MobKind == EAetheriaMobKind::Bruiser) ? TEXT("SFX_Bruiser_Slam") : TEXT("SFX_Swarm_Slash"));
+	UAetheriaMaterialLibrary::PlayGameSoundAtLocation(this, MeleeSfx, GetActorLocation(), 0.78f);
+
 	if (!TargetWizard || !TargetWizard->bIsAlive)
 	{
 		return;
@@ -1950,6 +2711,7 @@ void AAetheriaMobCharacter::ExecuteMeleeAttack(AAetheriaWizardCharacter* TargetW
 void AAetheriaMobCharacter::ExecuteRangedAttack(AAetheriaWizardCharacter* TargetWizard)
 {
 	PlayPresentationAction(static_cast<uint8>(EAetheriaAnimAction::CastPrimary));
+	UAetheriaMaterialLibrary::PlayGameSoundAtLocation(this, TEXT("SFX_Enemy_Ranged_Cast"), GetActorLocation(), 0.72f);
 	if (!TargetWizard || !TargetWizard->bIsAlive)
 	{
 		return;
@@ -1987,6 +2749,7 @@ void AAetheriaMobCharacter::ExecuteRangedAttack(AAetheriaWizardCharacter* Target
 void AAetheriaMobCharacter::ExecuteBossSlam()
 {
 	PlayPresentationAction(static_cast<uint8>(EAetheriaAnimAction::AttackSlam));
+	UAetheriaMaterialLibrary::PlayGameSoundAtLocation(this, TEXT("SFX_Boss_Slam"), SlamTargetLocation, 0.92f);
 	SlamSnapTimer = 0.38f;
 	AAetheriaLightningArcVFX::SpawnShockwaveRing(GetWorld(), SlamTargetLocation, 800.0f, AccentColor, 0.8f);
 
@@ -2215,7 +2978,23 @@ void AAetheriaMobCharacter::Die()
 	PlayPresentationAction(static_cast<uint8>(EAetheriaAnimAction::Death));
 	if (bDying) return;
 	bDying = true;
-	DeathDissolveTimer = 0.95f;
+	DeathDissolveTimer = 1.45f;
+
+	if (GetMesh() && GetMesh()->GetOverlayMaterial() != nullptr)
+	{
+		GetMesh()->SetOverlayMaterial(nullptr);
+	}
+	if (AAetheriaWizardCharacter* KillerWiz = Cast<AAetheriaWizardCharacter>(LastInstigator.Get()))
+	{
+		KillerWiz->AddCameraTrauma(0.18f);
+	}
+	TriggerImpactHitstop(0.04f);
+	AAetheriaLightningArcVFX::SpawnShockwaveRing(
+		GetWorld(),
+		GetActorLocation(),
+		(MobKind == EAetheriaMobKind::Boss) ? 520.0f : 230.0f,
+		FLinearColor(0.86f, 0.14f, 0.20f, 1.0f),
+		0.55f);
 
 	if (LastInstigator.IsValid())
 	{
@@ -2244,7 +3023,15 @@ void AAetheriaMobCharacter::Die()
 		GetCharacterMovement()->DisableMovement();
 	}
 
-	UAetheriaMaterialLibrary::PlayGameSound2D(this, TEXT("SFX_MobDeath"), 0.80f);
+	const TCHAR* DeathSfx = TEXT("SFX_MobDeath_Swarm");
+	switch (MobKind)
+	{
+	case EAetheriaMobKind::Boss:    DeathSfx = TEXT("SFX_Boss_Death"); break;
+	case EAetheriaMobKind::Bruiser: DeathSfx = TEXT("SFX_MobDeath_Bruiser"); break;
+	case EAetheriaMobKind::Ranged:  DeathSfx = TEXT("SFX_MobDeath_Ranged"); break;
+	default:                        DeathSfx = TEXT("SFX_MobDeath_Swarm"); break;
+	}
+	UAetheriaMaterialLibrary::PlayGameSoundAtLocation(this, DeathSfx, GetActorLocation(), 0.86f);
 
 	if (bExplodeOnDeath)
 	{

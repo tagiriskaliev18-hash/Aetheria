@@ -26,9 +26,11 @@ public class Aetheria : ModuleRules
 
         PrivateDependencyModuleNames.AddRange(new string[]
         {
+            "MoviePlayer",
             "RenderCore",
             "RHI",
-            "Niagara"
+            "Niagara",
+            "Projects"
         });
 
         if (Target.bBuildEditor)

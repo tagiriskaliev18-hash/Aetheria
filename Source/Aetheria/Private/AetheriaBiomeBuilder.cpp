@@ -1093,48 +1093,12 @@ void AAetheriaBiomeBuilder::TriggerAmbushTelegraphVisual(const FVector& Location
 
 int32 AAetheriaBiomeBuilder::RipNearbyMatterForSingularity(const FVector& WorldCenter, float PullRadiusUU, int32 MaxChunks, TArray<FTransform>& OutRippedTransforms)
 {
+	// Architectural safety guard: Black Hole must NEVER rip, shrink, or displace world environment ISMs or buildings.
+	(void)WorldCenter;
+	(void)PullRadiusUU;
+	(void)MaxChunks;
 	OutRippedTransforms.Reset();
-	if (MaxChunks <= 0)
-	{
-		return 0;
-	}
-
-	const float SearchRadiusSq = FMath::Square(PullRadiusUU * 1.45f);
-	UInstancedStaticMeshComponent* SourceISMs[2] = { BouldersISM, CrystalsISM };
-
-	for (UInstancedStaticMeshComponent* ISM : SourceISMs)
-	{
-		if (!ISM || OutRippedTransforms.Num() >= MaxChunks) continue;
-
-		const int32 NumInstances = ISM->GetInstanceCount();
-		bool bModifiedAny = false;
-		for (int32 i = 0; i < NumInstances && OutRippedTransforms.Num() < MaxChunks; ++i)
-		{
-			FTransform WorldT;
-			if (!ISM->GetInstanceTransform(i, WorldT, true))
-			{
-				continue;
-			}
-			// Skip already-consumed/hidden instances
-			if (WorldT.GetScale3D().Z <= 0.05f)
-			{
-				continue;
-			}
-			if (FVector::DistSquared2D(WorldT.GetLocation(), WorldCenter) <= SearchRadiusSq)
-			{
-				OutRippedTransforms.Add(WorldT);
-				WorldT.SetScale3D(FVector(0.001f));
-				ISM->UpdateInstanceTransform(i, WorldT, true, false, true);
-				bModifiedAny = true;
-			}
-		}
-		if (bModifiedAny)
-		{
-			ISM->MarkRenderStateDirty();
-		}
-	}
-
-	return OutRippedTransforms.Num();
+	return 0;
 }
 
 float AAetheriaBiomeBuilder::GetCurrentTriadMultiplier(EAetheriaSpellId SpellId) const

@@ -31,6 +31,6 @@ public:
 	static void PlayTaggedLoop(UObject* WorldContext, const TCHAR* NiagaraPath, FVector Location, FRotator Rotation, FVector Scale, FName Tag);
 	static void PlayNiagara(UWorld* World, const TCHAR* Path, FVector Location, FRotator Rotation, FVector Scale, bool bAutoDestroy);
 	/** Play exactly one system: Niagara if the asset exists, otherwise Cascade. Never both. */
-	static bool PlayOne(UWorld* World, const TCHAR* Path, FVector Location, FRotator Rotation, FVector Scale, bool bAutoDestroy = true);
+	static bool PlayOne(UWorld* World, const TCHAR* Path, FVector Location, FRotator Rotation, FVector Scale, bool bAutoDestroy = true, float MaxLifeSeconds = 2.6f);
 	static void PlayCascade(UWorld* World, const TCHAR* Path, FVector Location, FRotator Rotation, FVector Scale);
 };

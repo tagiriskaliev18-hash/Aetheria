@@ -14,9 +14,12 @@
 #include "Rendering/DrawElements.h"
 
 #include "Engine/Engine.h"
+#include "Engine/Canvas.h"
+#include "Engine/Font.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
+#include "Components/CapsuleComponent.h"
 #include "GameFramework/GameUserSettings.h"
 #include "EngineUtils.h"
 #include "Styling/CoreStyle.h"
@@ -71,6 +74,12 @@ namespace
 		case EAetheriaSpellId::GravityCataclysm: return TEXT("Разлом Земной Тверди");
 		case EAetheriaSpellId::PrismWall:        return TEXT("Стена Морозных Граней");
 		case EAetheriaSpellId::PrimalOverload:   return TEXT("Гнев Трёх Первоначал");
+		case EAetheriaSpellId::Macropyre:        return TEXT("Макропира: Река Пламени");
+		case EAetheriaSpellId::PlasmaField:      return TEXT("Плазменное Кольцо Бури");
+		case EAetheriaSpellId::CataclysmNova:    return TEXT("Апокалиптический Сверхвзрыв");
+		case EAetheriaSpellId::SunStrike:        return TEXT("Небесный Удар Гелиоса");
+		case EAetheriaSpellId::EyeOfTheStorm:    return TEXT("Око Грозового Шторма");
+		case EAetheriaSpellId::RequiemBlast:     return TEXT("Реквием Расколотых Душ");
 		default:                                 return S.DisplayName;
 		}
 	}
@@ -89,7 +98,37 @@ namespace
 		case EAetheriaSpellId::GravityCataclysm: return TEXT("Проклятие Каменных Недр");
 		case EAetheriaSpellId::PrismWall:        return TEXT("Заслон Ледяной Пустоты");
 		case EAetheriaSpellId::PrimalOverload:   return TEXT("Высший Обряд Триады");
+		case EAetheriaSpellId::Macropyre:        return TEXT("Запретный Катаклизм Недр");
+		case EAetheriaSpellId::PlasmaField:      return TEXT("Зов Штормового Разряда");
+		case EAetheriaSpellId::CataclysmNova:    return TEXT("Печать Термобарической Бездны");
+		case EAetheriaSpellId::SunStrike:        return TEXT("Солнечный Орбитальный Завет");
+		case EAetheriaSpellId::EyeOfTheStorm:    return TEXT("Венец Разъярённой Бури");
+		case EAetheriaSpellId::RequiemBlast:     return TEXT("Голос Глубокого Разлома");
 		default:                                 return TEXT("Древнее Заклинание");
+		}
+	}
+
+	int32 GetSpellPlateIndex(EAetheriaSpellId Id)
+	{
+		switch (Id)
+		{
+		case EAetheriaSpellId::Fireball:         return 0;
+		case EAetheriaSpellId::BlackHole:        return 1;
+		case EAetheriaSpellId::Chronosphere:     return 2;
+		case EAetheriaSpellId::ChaosMeteor:      return 3;
+		case EAetheriaSpellId::ChainLightning:   return 4;
+		case EAetheriaSpellId::SupernovaBeam:    return 5;
+		case EAetheriaSpellId::ChronoBlink:      return 6;
+		case EAetheriaSpellId::GravityCataclysm: return 7;
+		case EAetheriaSpellId::PrismWall:        return 8;
+		case EAetheriaSpellId::PrimalOverload:   return 9;
+		case EAetheriaSpellId::Macropyre:        return 0;
+		case EAetheriaSpellId::PlasmaField:      return 4;
+		case EAetheriaSpellId::CataclysmNova:    return 7;
+		case EAetheriaSpellId::SunStrike:        return 5;
+		case EAetheriaSpellId::EyeOfTheStorm:    return 2;
+		case EAetheriaSpellId::RequiemBlast:     return 1;
+		default:                                 return 0;
 		}
 	}
 
@@ -1349,7 +1388,8 @@ void SAetheriaMainOverlay::RefreshCachedProfileStats()
 
 void SAetheriaMainOverlay::SetGrimoirePage(int32 NewPage)
 {
-	const int32 Wrapped = ((NewPage % 10) + 10) % 10;
+	const int32 TotalPages = FMath::Max(1, UAetheriaSpellDatabase::GetAllSpells().Num());
+	const int32 Wrapped = ((NewPage % TotalPages) + TotalPages) % TotalPages;
 	if (Wrapped != CurrentGrimoirePage)
 	{
 		CurrentGrimoirePage = Wrapped;
@@ -1445,10 +1485,19 @@ const FSlateBrush* SAetheriaMainOverlay::GetBookSpreadBrush() const
 
 const FSlateBrush* SAetheriaMainOverlay::GetCurrentGrimoirePlateBrush() const
 {
-	const int32 Idx = FMath::Clamp(CurrentGrimoirePage, 0, 9);
-	if (SpellPlateBrushes.IsValidIndex(Idx) && SpellPlateBrushes[Idx].IsValid())
+	const TArray<FAetheriaSpellDef>& AllSpells = UAetheriaSpellDatabase::GetAllSpells();
+	if (AllSpells.Num() > 0)
 	{
-		return SpellPlateBrushes[Idx].Get();
+		const int32 SpellIdx = FMath::Clamp(CurrentGrimoirePage, 0, AllSpells.Num() - 1);
+		const int32 PlateIdx = GetSpellPlateIndex(AllSpells[SpellIdx].SpellId);
+		if (SpellPlateBrushes.IsValidIndex(PlateIdx) && SpellPlateBrushes[PlateIdx].IsValid())
+		{
+			return SpellPlateBrushes[PlateIdx].Get();
+		}
+	}
+	if (SpellPlateBrushes.Num() > 0 && SpellPlateBrushes[0].IsValid())
+	{
+		return SpellPlateBrushes[0].Get();
 	}
 	return FCoreStyle::Get().GetBrush("WhiteBrush");
 }
@@ -1462,16 +1511,17 @@ const FSlateBrush* SAetheriaMainOverlay::GetSlotSpellBrush(int32 SlotIdx) const
 			const EAetheriaSpellId SpellId = (SlotIdx == 0) ? Wiz->SlotD : Wiz->SlotF;
 			if (SpellId != EAetheriaSpellId::None)
 			{
-				const TArray<FAetheriaSpellDef>& AllSpells = UAetheriaSpellDatabase::GetAllSpells();
-				for (int32 i = 0; i < AllSpells.Num(); ++i)
+				const int32 PlateIdx = GetSpellPlateIndex(SpellId);
+				if (SpellPlateBrushes.IsValidIndex(PlateIdx) && SpellPlateBrushes[PlateIdx].IsValid())
 				{
-					if (AllSpells[i].SpellId == SpellId && SpellPlateBrushes.IsValidIndex(i) && SpellPlateBrushes[i].IsValid())
-					{
-						return SpellPlateBrushes[i].Get();
-					}
+					return SpellPlateBrushes[PlateIdx].Get();
 				}
 			}
 		}
+	}
+	if (SpellPlateBrushes.Num() > 0 && SpellPlateBrushes[0].IsValid())
+	{
+		return SpellPlateBrushes[0].Get();
 	}
 	return FCoreStyle::Get().GetBrush("WhiteBrush");
 }
@@ -2333,34 +2383,40 @@ TSharedRef<SWidget> SAetheriaMainOverlay::BuildInGameHUD()
 			SNew(SVerticalBox)
 
 			// Floating Triad & Mode Preview Crown Ribbon above Dock Horned Crest
-			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0, 0, 0, 4)
+			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0, 0, 0, 14)
 			[
 				SNew(SBorder)
-				.BorderImage(PanelBrush)
-				.BorderBackgroundColor(PanelObsidianBrush.IsValid() ? FLinearColor::White : MindVoidPanel)
-				.Padding(12.0f, 5.0f)
+				.BorderImage(WhiteBrush)
+				.BorderBackgroundColor(DimBronzeBorder)
+				.Padding(1.0f)
 				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
+					SNew(SBorder)
+					.BorderImage(WhiteBrush)
+					.BorderBackgroundColor(FLinearColor(0.018f, 0.018f, 0.028f, 0.92f))
+					.Padding(14.0f, 5.0f)
 					[
-						SNew(STextBlock)
-						.Text(this, &SAetheriaMainOverlay::GetOrbTriadText)
-						.Font(MindFont(10, true))
-						.ColorAndOpacity(BoneParchmentText)
-					]
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
-					[
-						SNew(STextBlock)
-						.Text(this, &SAetheriaMainOverlay::GetNextSpellPreviewText)
-						.Font(MindFont(10, true))
-						.ColorAndOpacity(GildedBronzeText)
-					]
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-					[
-						SNew(STextBlock)
-						.Text(this, &SAetheriaMainOverlay::GetCastModePillText)
-						.Font(MindFont(9, true))
-						.ColorAndOpacity(AshMutedText)
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
+						[
+							SNew(STextBlock)
+							.Text(this, &SAetheriaMainOverlay::GetOrbTriadText)
+							.Font(MindFont(10, true))
+							.ColorAndOpacity(BoneParchmentText)
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
+						[
+							SNew(STextBlock)
+							.Text(this, &SAetheriaMainOverlay::GetNextSpellPreviewText)
+							.Font(MindFont(10, true))
+							.ColorAndOpacity(GildedBronzeText)
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(this, &SAetheriaMainOverlay::GetCastModePillText)
+							.Font(MindFont(9, true))
+							.ColorAndOpacity(AshMutedText)
+						]
 					]
 				]
 			]
@@ -2569,17 +2625,15 @@ TSharedRef<SWidget> SAetheriaMainOverlay::BuildGrimoireModal()
 {
 	const FSlateBrush* WhiteBrush = FCoreStyle::Get().GetBrush("WhiteBrush");
 	const FSlateBrush* PanelBrush = PanelObsidianBrush.IsValid() ? PanelObsidianBrush.Get() : WhiteBrush;
-	static const TCHAR* RomanChapters[10] = {
-		TEXT("I"), TEXT("II"), TEXT("III"), TEXT("IV"), TEXT("V"),
-		TEXT("VI"), TEXT("VII"), TEXT("VIII"), TEXT("IX"), TEXT("X")
+	static const TCHAR* RomanChapters[16] = {
+		TEXT("I"), TEXT("II"), TEXT("III"), TEXT("IV"), TEXT("V"), TEXT("VI"), TEXT("VII"), TEXT("VIII"),
+		TEXT("IX"), TEXT("X"), TEXT("XI"), TEXT("XII"), TEXT("XIII"), TEXT("XIV"), TEXT("XV"), TEXT("XVI")
 	};
+	const int32 TotalSpells = FMath::Clamp(UAetheriaSpellDatabase::GetAllSpells().Num(), 1, 16);
 
-	TSharedRef<SHorizontalBox> BookmarkTabsRow = SNew(SHorizontalBox);
-	for (int32 TabIdx = 0; TabIdx < 10; ++TabIdx)
+	auto MakeChapterTab = [this](int32 TabIdx) -> TSharedRef<SWidget>
 	{
-		BookmarkTabsRow->AddSlot().AutoWidth().Padding(0, 0, 4, 0)
-		[
-			SNew(SButton)
+		return SNew(SButton)
 			.ButtonStyle(&StoneBtnStyle)
 			.ButtonColorAndOpacity_Lambda([this, TabIdx]() {
 				return (CurrentGrimoirePage == TabIdx)
@@ -2599,12 +2653,17 @@ TSharedRef<SWidget> SAetheriaMainOverlay::BuildGrimoireModal()
 						? FSlateColor(GildedBronzeText)
 						: FSlateColor(BoneParchmentText);
 				})
-			]
-		];
-	}
+			];
+	};
 
-	BookmarkTabsRow->AddSlot().FillWidth(1.0f) [ SNew(SSpacer) ];
-	BookmarkTabsRow->AddSlot().AutoWidth()
+	TSharedRef<SHorizontalBox> BookmarkTabsRow1 = SNew(SHorizontalBox);
+	const int32 Row1Count = FMath::Min(8, TotalSpells);
+	for (int32 TabIdx = 0; TabIdx < Row1Count; ++TabIdx)
+	{
+		BookmarkTabsRow1->AddSlot().AutoWidth().Padding(0, 0, 4, 0) [ MakeChapterTab(TabIdx) ];
+	}
+	BookmarkTabsRow1->AddSlot().FillWidth(1.0f) [ SNew(SSpacer) ];
+	BookmarkTabsRow1->AddSlot().AutoWidth()
 	[
 		SNew(SButton)
 		.ButtonStyle(&StoneBtnStyle)
@@ -2616,6 +2675,17 @@ TSharedRef<SWidget> SAetheriaMainOverlay::BuildGrimoireModal()
 			.ColorAndOpacity(BoneParchmentText)
 		]
 	];
+
+	TSharedRef<SHorizontalBox> BookmarkTabsRow2 = SNew(SHorizontalBox);
+	for (int32 TabIdx = 8; TabIdx < TotalSpells; ++TabIdx)
+	{
+		BookmarkTabsRow2->AddSlot().AutoWidth().Padding(0, 0, 4, 0) [ MakeChapterTab(TabIdx) ];
+	}
+	BookmarkTabsRow2->AddSlot().FillWidth(1.0f) [ SNew(SSpacer) ];
+
+	TSharedRef<SVerticalBox> BookmarkTabsBox = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4) [ BookmarkTabsRow1 ]
+		+ SVerticalBox::Slot().AutoHeight() [ BookmarkTabsRow2 ];
 
 	return SNew(SBorder)
 		.BorderImage(FCoreStyle::Get().GetBrush("NoBrush"))
@@ -2646,10 +2716,10 @@ TSharedRef<SWidget> SAetheriaMainOverlay::BuildGrimoireModal()
 				[
 					SNew(SVerticalBox)
 
-					// Top Roman Bookmark Tabs I..X + Close
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 14)
+					// Top Roman Bookmark Tabs I..XVI + Close
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
 					[
-						BookmarkTabsRow
+						BookmarkTabsBox
 					]
 
 					// Center Spread: Left Illustration Page + Spine Gutter + Right Lore/Stats Page
@@ -2666,8 +2736,12 @@ TSharedRef<SWidget> SAetheriaMainOverlay::BuildGrimoireModal()
 							[
 								SNew(STextBlock)
 								.Text_Lambda([this]() {
-									static const TCHAR* Romans[] = {TEXT("I"),TEXT("II"),TEXT("III"),TEXT("IV"),TEXT("V"),TEXT("VI"),TEXT("VII"),TEXT("VIII"),TEXT("IX"),TEXT("X")};
-									const int32 Idx = FMath::Clamp(CurrentGrimoirePage, 0, 9);
+									static const TCHAR* Romans[16] = {
+										TEXT("I"),TEXT("II"),TEXT("III"),TEXT("IV"),TEXT("V"),TEXT("VI"),TEXT("VII"),TEXT("VIII"),
+										TEXT("IX"),TEXT("X"),TEXT("XI"),TEXT("XII"),TEXT("XIII"),TEXT("XIV"),TEXT("XV"),TEXT("XVI")
+									};
+									const int32 Total = FMath::Clamp(UAetheriaSpellDatabase::GetAllSpells().Num(), 1, 16);
+									const int32 Idx = FMath::Clamp(CurrentGrimoirePage, 0, Total - 1);
 									return FText::FromString(FString::Printf(TEXT("ЛИСТ %s  ·  АРКАНУМ СТИХИЙ"), Romans[Idx]));
 								})
 								.Font(MindFont(11, true, false))
@@ -2871,9 +2945,11 @@ TSharedRef<SWidget> SAetheriaMainOverlay::BuildGrimoireModal()
 						[
 							SNew(STextBlock)
 							.Text_Lambda([this]() {
+								const int32 Total = FMath::Max(1, UAetheriaSpellDatabase::GetAllSpells().Num());
 								return FText::FromString(FString::Printf(
-									TEXT("Страница %d / 10   ·   Листайте [<-] / [->] или колесом мыши"),
-									FMath::Clamp(CurrentGrimoirePage, 0, 9) + 1));
+									TEXT("Страница %d / %d   ·   Листайте [<-] / [->] или колесом мыши"),
+									FMath::Clamp(CurrentGrimoirePage, 0, Total - 1) + 1,
+									Total));
 							})
 							.Font(MindFont(10, true, false))
 							.ColorAndOpacity(FLinearColor(FColor::FromHex(TEXT("C8B99B"))))
@@ -4258,7 +4334,265 @@ void AAetheriaHUD::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		GEngine->GameViewport->RemoveViewportWidgetContent(MainOverlay.ToSharedRef());
 		MainOverlay.Reset();
 	}
+	FloatingDamages.Reset();
+	TrailingMobHP.Reset();
 	Super::EndPlay(EndPlayReason);
+}
+
+void AAetheriaHUD::SpawnFloatingDamageNumber(
+	UWorld* World,
+	const FVector& WorldLocation,
+	float DamageAmount,
+	bool bIsCritOrSynergy,
+	FLinearColor Color)
+{
+	if (!World || DamageAmount < 1.0f) return;
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (APlayerController* PC = It->Get())
+		{
+			if (PC->IsLocalController())
+			{
+				if (AAetheriaHUD* Hud = Cast<AAetheriaHUD>(PC->GetHUD()))
+				{
+					Hud->AddFloatingDamage(WorldLocation, DamageAmount, bIsCritOrSynergy, Color);
+				}
+			}
+		}
+	}
+}
+
+void AAetheriaHUD::AddFloatingDamage(const FVector& WorldLocation, float DamageAmount, bool bIsCritOrSynergy, FLinearColor Color)
+{
+	if (FloatingDamages.Num() >= 48)
+	{
+		FloatingDamages.RemoveAt(0);
+	}
+	FAetheriaFloatingDamage Entry;
+	Entry.WorldLocation = WorldLocation + FVector(FMath::FRandRange(-18.0f, 18.0f), FMath::FRandRange(-18.0f, 18.0f), 0.0f);
+	Entry.Amount = DamageAmount;
+	Entry.bIsCritOrSynergy = bIsCritOrSynergy;
+	Entry.Color = Color;
+	Entry.Age = 0.0f;
+	Entry.Lifetime = bIsCritOrSynergy ? 1.05f : 0.85f;
+	Entry.LateralSeed = FMath::FRandRange(-1.0f, 1.0f);
+	FloatingDamages.Add(Entry);
+}
+
+void AAetheriaHUD::DrawHUD()
+{
+	Super::DrawHUD();
+
+	UWorld* World = GetWorld();
+	if (!Canvas || !World || IsAnyModalOpen())
+	{
+		return;
+	}
+
+	const float Dt = FMath::Clamp(World->GetDeltaSeconds(), 0.001f, 0.1f);
+	APlayerController* OwningPC = GetOwningPlayerController();
+	FVector CamLoc = FVector::ZeroVector;
+	FRotator CamRot = FRotator::ZeroRotator;
+	if (OwningPC)
+	{
+		OwningPC->GetPlayerViewPoint(CamLoc, CamRot);
+	}
+	const FVector CamFwd = CamRot.Vector();
+
+	UFont* SmallFont = GEngine ? GEngine->GetSmallFont() : nullptr;
+	UFont* MedFont = GEngine ? GEngine->GetMediumFont() : SmallFont;
+	UFont* LargeFont = GEngine ? GEngine->GetLargeFont() : MedFont;
+
+	// Prune dead weak pointers from TrailingMobHP
+	for (auto It = TrailingMobHP.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	// 1. Overhead Enemy HP Bars + Damage Trail + Status Tags
+	for (TActorIterator<AAetheriaMobCharacter> MobIt(World); MobIt; ++MobIt)
+	{
+		AAetheriaMobCharacter* Mob = *MobIt;
+		if (!IsValid(Mob) || Mob->IsActorBeingDestroyed() || Mob->HP <= 0.0f || Mob->IsDying())
+		{
+			continue;
+		}
+
+		float& TrailHP = TrailingMobHP.FindOrAdd(Mob);
+		if (TrailHP <= 0.0f || TrailHP < Mob->HP)
+		{
+			TrailHP = Mob->HP;
+		}
+		else
+		{
+			TrailHP = FMath::FInterpTo(TrailHP, Mob->HP, Dt, 4.5f);
+		}
+
+		const float HalfH = Mob->GetCapsuleComponent() ? Mob->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 100.0f;
+		const float HeadPad = (Mob->MobKind == EAetheriaMobKind::Boss) ? 58.0f : 36.0f;
+		const FVector HeadWorld = Mob->GetActorLocation() + FVector(0.0f, 0.0f, HalfH + HeadPad);
+		if (FVector::DotProduct(HeadWorld - CamLoc, CamFwd) <= 10.0f)
+		{
+			continue;
+		}
+
+		const FVector ScreenPos = Project(HeadWorld, false);
+		if (ScreenPos.Z <= 0.0f ||
+			ScreenPos.X < -140.0f || ScreenPos.X > Canvas->SizeX + 140.0f ||
+			ScreenPos.Y < -80.0f || ScreenPos.Y > Canvas->SizeY + 80.0f)
+		{
+			continue;
+		}
+
+		const bool bIsBoss = (Mob->MobKind == EAetheriaMobKind::Boss);
+		const bool bIsElite = (Mob->bIsEliteLeader && !bIsBoss);
+		const float BarW = bIsBoss ? 128.0f : (bIsElite ? 96.0f : 76.0f);
+		const float BarH = bIsBoss ? 12.0f : (bIsElite ? 10.0f : 8.0f);
+		const float BarX = ScreenPos.X - BarW * 0.5f;
+		const float BarY = ScreenPos.Y - BarH * 0.5f;
+
+		const float SafeMax = FMath::Max(1.0f, Mob->MaxHP);
+		const float HPRatio = FMath::Clamp(Mob->HP / SafeMax, 0.0f, 1.0f);
+		const float TrailRatio = FMath::Clamp(TrailHP / SafeMax, HPRatio, 1.0f);
+
+		const FLinearColor BorderCol = (bIsBoss || bIsElite)
+			? FLinearColor(0.84f, 0.66f, 0.28f, 0.96f)
+			: FLinearColor(0.08f, 0.07f, 0.10f, 0.94f);
+		const float BorderPad = (bIsBoss || bIsElite) ? 2.0f : 1.5f;
+
+		DrawRect(BorderCol, BarX - BorderPad, BarY - BorderPad, BarW + BorderPad * 2.0f, BarH + BorderPad * 2.0f);
+		DrawRect(FLinearColor(0.03f, 0.025f, 0.035f, 0.92f), BarX, BarY, BarW, BarH);
+
+		if (TrailRatio > HPRatio + 0.002f)
+		{
+			DrawRect(FLinearColor(1.0f, 0.84f, 0.42f, 0.92f), BarX, BarY, BarW * TrailRatio, BarH);
+		}
+
+		const FLinearColor FillCol = bIsBoss
+			? FLinearColor(0.86f, 0.12f, 0.16f, 0.98f)
+			: (bIsElite ? FLinearColor(0.95f, 0.36f, 0.12f, 0.98f) : FLinearColor(0.82f, 0.16f, 0.18f, 0.96f));
+		DrawRect(FillCol, BarX, BarY, BarW * HPRatio, BarH);
+
+		// Name + HP readout when damaged or elite/boss
+		const bool bShowHeader = bIsBoss || bIsElite || (Mob->HP < SafeMax * 0.999f);
+		float HeaderTopY = BarY - 3.0f;
+		if (bShowHeader)
+		{
+			const FString HeaderText = FString::Printf(
+				TEXT("%s  %.0f/%.0f"),
+				Mob->MobDisplayName.IsEmpty() ? TEXT("Враг") : *Mob->MobDisplayName,
+				FMath::CeilToFloat(Mob->HP),
+				FMath::CeilToFloat(SafeMax));
+			float TextW = 0.0f, TextH = 0.0f;
+			GetTextSize(HeaderText, TextW, TextH, SmallFont, 0.95f);
+			HeaderTopY = BarY - TextH - 2.0f;
+			const float TextX = ScreenPos.X - TextW * 0.5f;
+			DrawText(HeaderText, FLinearColor(0.0f, 0.0f, 0.0f, 0.85f), TextX + 1.0f, HeaderTopY + 1.0f, SmallFont, 0.95f);
+			DrawText(HeaderText, (bIsBoss || bIsElite) ? GildedBronzeText : BoneParchmentText, TextX, HeaderTopY, SmallFont, 0.95f);
+		}
+
+		// Status tags above header
+		FString StatusTag;
+		if (Mob->BurnStacks > 0)
+		{
+			StatusTag += (Mob->BurnStacks > 1)
+				? FString::Printf(TEXT("ОЖОГ x%d"), Mob->BurnStacks)
+				: TEXT("ОЖОГ");
+		}
+		if (Mob->IsChronoFrozen())
+		{
+			if (!StatusTag.IsEmpty()) StatusTag += TEXT("  ");
+			StatusTag += TEXT("ЗАМОР.");
+		}
+		if (!StatusTag.IsEmpty())
+		{
+			float TagW = 0.0f, TagH = 0.0f;
+			GetTextSize(StatusTag, TagW, TagH, SmallFont, 0.88f);
+			const float TagX = ScreenPos.X - TagW * 0.5f;
+			const float TagY = HeaderTopY - TagH - 1.0f;
+			const FLinearColor TagCol = Mob->IsChronoFrozen()
+				? FLinearColor(0.30f, 0.92f, 1.0f, 1.0f)
+				: FLinearColor(1.0f, 0.44f, 0.14f, 1.0f);
+			DrawText(StatusTag, FLinearColor(0.0f, 0.0f, 0.0f, 0.9f), TagX + 1.0f, TagY + 1.0f, SmallFont, 0.88f);
+			DrawText(StatusTag, TagCol, TagX, TagY, SmallFont, 0.88f);
+		}
+	}
+
+	// 2. Rising Fading Floating Damage Numbers
+	for (int32 i = FloatingDamages.Num() - 1; i >= 0; --i)
+	{
+		FAetheriaFloatingDamage& FD = FloatingDamages[i];
+		FD.Age += Dt;
+		if (FD.Age >= FD.Lifetime)
+		{
+			FloatingDamages.RemoveAtSwap(i);
+			continue;
+		}
+
+		const float NormAge = FMath::Clamp(FD.Age / FMath::Max(0.05f, FD.Lifetime), 0.0f, 1.0f);
+		const FVector RisingWorld = FD.WorldLocation + FVector(0.0f, 0.0f, 32.0f + FD.Age * 92.0f);
+		if (FVector::DotProduct(RisingWorld - CamLoc, CamFwd) <= 10.0f)
+		{
+			continue;
+		}
+		const FVector ScreenPt = Project(RisingWorld, false);
+		if (ScreenPt.Z <= 0.0f)
+		{
+			continue;
+		}
+
+		const float Alpha = 1.0f - FMath::Pow(NormAge, 2.0f);
+		const float Punch = (FD.Age < 0.12f) ? FMath::Lerp(1.35f, 1.0f, FD.Age / 0.12f) : 1.0f;
+		const float Scale = (FD.bIsCritOrSynergy ? 1.28f : 1.02f) * Punch;
+		const FString DmgStr = FString::Printf(TEXT("%.0f%s"), FMath::RoundToFloat(FD.Amount), FD.bIsCritOrSynergy ? TEXT("!") : TEXT(""));
+
+		UFont* DmgFont = FD.bIsCritOrSynergy ? LargeFont : MedFont;
+		float DmgW = 0.0f, DmgH = 0.0f;
+		GetTextSize(DmgStr, DmgW, DmgH, DmgFont, Scale);
+		const float DrawX = ScreenPt.X + FD.LateralSeed * FD.Age * 28.0f - DmgW * 0.5f;
+		const float DrawY = ScreenPt.Y - DmgH * 0.5f;
+
+		FLinearColor Col = FD.Color;
+		Col.A *= Alpha;
+		DrawText(DmgStr, FLinearColor(0.0f, 0.0f, 0.0f, 0.85f * Alpha), DrawX + 1.5f, DrawY + 1.5f, DmgFont, Scale);
+		DrawText(DmgStr, Col, DrawX, DrawY, DmgFont, Scale);
+	}
+
+	// 3. Centered Downed Banner if local Wizard is downed
+	if (const AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetOwningPawn()))
+	{
+		if (!Wiz->bIsAlive)
+		{
+			const float BoxW = 540.0f;
+			const float BoxH = 84.0f;
+			const float BoxX = (Canvas->SizeX - BoxW) * 0.5f;
+			const float BoxY = Canvas->SizeY * 0.22f;
+
+			DrawRect(FLinearColor(0.74f, 0.18f, 0.16f, 0.94f), BoxX - 2.0f, BoxY - 2.0f, BoxW + 4.0f, BoxH + 4.0f);
+			DrawRect(FLinearColor(0.035f, 0.025f, 0.035f, 0.92f), BoxX, BoxY, BoxW, BoxH);
+
+			const FString Title = TEXT("ВЫ ПОВЕРЖЕНЫ");
+			float TW = 0.0f, TH = 0.0f;
+			GetTextSize(Title, TW, TH, LargeFont, 1.35f);
+			const float TX = (Canvas->SizeX - TW) * 0.5f;
+			const float TY = BoxY + 12.0f;
+			DrawText(Title, FLinearColor(0.0f, 0.0f, 0.0f, 0.9f), TX + 1.5f, TY + 1.5f, LargeFont, 1.35f);
+			DrawText(Title, FLinearColor(0.98f, 0.34f, 0.24f, 1.0f), TX, TY, LargeFont, 1.35f);
+
+			const FString Sub = (Wiz->RespawnTimer > 0.05f)
+				? FString::Printf(TEXT("Возрождение через %.1f с — союзники рядом ускоряют подъём"), Wiz->RespawnTimer)
+				: TEXT("Ожидание возрождения — союзники рядом ускоряют подъём");
+			float SW = 0.0f, SH = 0.0f;
+			GetTextSize(Sub, SW, SH, MedFont, 1.0f);
+			const float SX = (Canvas->SizeX - SW) * 0.5f;
+			const float SY = TY + TH + 6.0f;
+			DrawText(Sub, FLinearColor(0.0f, 0.0f, 0.0f, 0.85f), SX + 1.0f, SY + 1.0f, MedFont, 1.0f);
+			DrawText(Sub, BoneParchmentText, SX, SY, MedFont, 1.0f);
+		}
+	}
 }
 
 void AAetheriaHUD::ShowLobby()

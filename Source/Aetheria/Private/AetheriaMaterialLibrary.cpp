@@ -10,11 +10,13 @@
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
-#include "Sound/SoundWaveProcedural.h"
+#include "Sound/SoundConcurrency.h"
+#include "Sound/SoundAttenuation.h"
 
 #if WITH_EDITOR
 #include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
@@ -40,6 +42,8 @@
 #include "Materials/MaterialExpressionOneMinus.h"
 #include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialExpressionAppendVector.h"
+#include "Materials/MaterialExpressionComponentMask.h"
 #include "UObject/SavePackage.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
@@ -63,11 +67,17 @@ UTexture2D* UAetheriaMaterialLibrary::LoadOrImportTexture(const FString& AssetNa
 		}
 	}
 
-	const FString PkgPath = FString::Printf(TEXT("/Game/Textures/%s"), *AssetName);
 	const FString CookedPath = FString::Printf(TEXT("/Game/Textures/%s.%s"), *AssetName, *AssetName);
-	UTexture2D* Tex = FPackageName::DoesPackageExist(PkgPath)
-		? LoadObject<UTexture2D>(nullptr, *CookedPath, nullptr, LOAD_NoWarn | LOAD_Quiet)
-		: nullptr;
+	static TSet<FString> FailedCookedTexPaths;
+	UTexture2D* Tex = nullptr;
+	if (!FailedCookedTexPaths.Contains(CookedPath))
+	{
+		Tex = LoadObject<UTexture2D>(nullptr, *CookedPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (!Tex)
+		{
+			FailedCookedTexPaths.Add(CookedPath);
+		}
+	}
 
 	auto TryLoadTexPath = [&Tex](const TCHAR* ObjectPath)
 	{
@@ -188,11 +198,17 @@ UStaticMesh* UAetheriaMaterialLibrary::LoadCustomOrFallbackMesh(const FString& M
 
 	auto TryStatic = [](const FString& PkgPath, const FString& ObjectName) -> UStaticMesh*
 	{
-		if (FPackageName::DoesPackageExist(PkgPath))
+		static TSet<FString> FailedCookedMeshPaths;
+		const FString CookedPath = FString::Printf(TEXT("%s.%s"), *PkgPath, *ObjectName);
+		if (FailedCookedMeshPaths.Contains(CookedPath))
 		{
-			const FString CookedPath = FString::Printf(TEXT("%s.%s"), *PkgPath, *ObjectName);
-			return LoadObject<UStaticMesh>(nullptr, *CookedPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+			return nullptr;
 		}
+		if (UStaticMesh* Loaded = LoadObject<UStaticMesh>(nullptr, *CookedPath, nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			return Loaded;
+		}
+		FailedCookedMeshPaths.Add(CookedPath);
 		return nullptr;
 	};
 
@@ -231,15 +247,6 @@ UStaticMesh* UAetheriaMaterialLibrary::LoadCustomOrFallbackMesh(const FString& M
 	return ResultMesh;
 }
 
-struct FAetheriaCachedRawWav
-{
-	uint32 SampleRate = 48000;
-	uint16 NumChannels = 2;
-	float Duration = 0.0f;
-	TArray<uint8> PCMData;
-	bool bValid = false;
-};
-
 static bool IsSilentAudioTestMode()
 {
 	return IsRunningCommandlet()
@@ -249,126 +256,345 @@ static bool IsSilentAudioTestMode()
 		|| FParse::Param(FCommandLine::Get(), TEXT("autotest"));
 }
 
-static bool ParseWavRiffBytes(const TArray<uint8>& Bytes, FAetheriaCachedRawWav& OutWav)
+static USoundConcurrency* GetAetheriaSharedSFXConcurrency()
 {
-	const int32 TotalLen = Bytes.Num();
-	if (TotalLen < 44) return false;
-	if (Bytes[0] != 'R' || Bytes[1] != 'I' || Bytes[2] != 'F' || Bytes[3] != 'F') return false;
-	if (Bytes[8] != 'W' || Bytes[9] != 'A' || Bytes[10] != 'V' || Bytes[11] != 'E') return false;
-
-	uint16 Channels = 2;
-	uint32 SampleRate = 48000;
-	uint16 BitsPerSample = 16;
-	int32 Pos = 12;
-
-	while (Pos + 8 <= TotalLen)
+	static TWeakObjectPtr<USoundConcurrency> CachedConcurrency;
+	if (!CachedConcurrency.IsValid())
 	{
-		const uint32 ChunkId = *reinterpret_cast<const uint32*>(&Bytes[Pos]);
-		uint32 ChunkSize = *reinterpret_cast<const uint32*>(&Bytes[Pos + 4]);
-		Pos += 8;
-		if (Pos + static_cast<int32>(ChunkSize) > TotalLen)
+		USoundConcurrency* Obj = NewObject<USoundConcurrency>(GetTransientPackage(), TEXT("AetheriaSharedSFXConcurrency"));
+		if (Obj)
 		{
-			ChunkSize = static_cast<uint32>(TotalLen - Pos);
+			Obj->AddToRoot();
+			Obj->Concurrency.MaxCount = 3;
+			Obj->Concurrency.ResolutionRule = EMaxConcurrentResolutionRule::StopOldest;
+			Obj->Concurrency.VoiceStealReleaseTime = 0.08f;
+			CachedConcurrency = Obj;
 		}
-
-		// "fmt " == 0x20746D66 LE, "data" == 0x61746164 LE
-		if (Bytes[Pos - 8] == 'f' && Bytes[Pos - 7] == 'm' && Bytes[Pos - 6] == 't' && Bytes[Pos - 5] == ' ' && ChunkSize >= 16)
-		{
-			Channels = *reinterpret_cast<const uint16*>(&Bytes[Pos + 2]);
-			SampleRate = *reinterpret_cast<const uint32*>(&Bytes[Pos + 4]);
-			BitsPerSample = *reinterpret_cast<const uint16*>(&Bytes[Pos + 14]);
-		}
-		else if (Bytes[Pos - 8] == 'd' && Bytes[Pos - 7] == 'a' && Bytes[Pos - 6] == 't' && Bytes[Pos - 5] == 'a' && ChunkSize > 0)
-		{
-			if (BitsPerSample == 16 && Channels >= 1 && SampleRate >= 8000)
-			{
-				OutWav.SampleRate = SampleRate;
-				OutWav.NumChannels = Channels;
-				OutWav.PCMData.SetNumUninitialized(static_cast<int32>(ChunkSize));
-				FMemory::Memcpy(OutWav.PCMData.GetData(), &Bytes[Pos], ChunkSize);
-				const float BytesPerSec = static_cast<float>(SampleRate) * Channels * 2.0f;
-				OutWav.Duration = BytesPerSec > 0.0f ? (static_cast<float>(ChunkSize) / BytesPerSec) : 0.0f;
-				OutWav.bValid = true;
-				return true;
-			}
-			return false;
-		}
-		(void)ChunkId;
-		Pos += static_cast<int32>(ChunkSize);
-		if ((ChunkSize & 1u) != 0u) Pos += 1;
 	}
-	return false;
+	return CachedConcurrency.Get();
+}
+
+static USoundAttenuation* GetAetheriaSharedSFXAttenuation()
+{
+	static TWeakObjectPtr<USoundAttenuation> CachedAtten;
+	if (!CachedAtten.IsValid())
+	{
+		USoundAttenuation* Obj = NewObject<USoundAttenuation>(GetTransientPackage(), TEXT("AetheriaSharedSFXAttenuation"));
+		if (Obj)
+		{
+			Obj->AddToRoot();
+			Obj->Attenuation.bAttenuate = true;
+			Obj->Attenuation.bSpatialize = true;
+			Obj->Attenuation.DistanceAlgorithm = EAttenuationDistanceModel::Logarithmic;
+			Obj->Attenuation.AttenuationShape = EAttenuationShape::Sphere;
+			Obj->Attenuation.AttenuationShapeExtents = FVector(450.0f, 450.0f, 450.0f);
+			Obj->Attenuation.FalloffDistance = 2400.0f;
+			CachedAtten = Obj;
+		}
+	}
+	return CachedAtten.Get();
+}
+
+static const TCHAR* PickStudioFabSoundPath(const FString& SoundName)
+{
+	static uint32 VariantCursor = 0;
+	const uint32 Pick = ++VariantCursor;
+
+	auto Choose2 = [Pick](const TCHAR* A, const TCHAR* B) -> const TCHAR*
+	{
+		return ((Pick & 1u) == 0u) ? A : B;
+	};
+	auto Choose3 = [Pick](const TCHAR* A, const TCHAR* B, const TCHAR* C) -> const TCHAR*
+	{
+		const uint32 M = Pick % 3u;
+		return (M == 0u) ? A : ((M == 1u) ? B : C);
+	};
+
+	// --- Fire & Meteor Spells ---
+	if (SoundName.Contains(TEXT("ChaosMeteor_Impact")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_RockExplosion1_1.SW_MagicSpell_RockExplosion1_1"),
+			TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_MagmaEruption_1.SW_MagicSpell_MagmaEruption_1"));
+	}
+	if (SoundName.Contains(TEXT("ChaosMeteor")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_MagmaEruption_1.SW_MagicSpell_MagmaEruption_1"),
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_ThrowHeavy_1.SW_MagicCast_ThrowHeavy_1"));
+	}
+	if (SoundName.Contains(TEXT("Fireball_Boom")) || SoundName.Contains(TEXT("Fireball_Impact")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_Fire_1.SW_MagicImpact_Fire_1"),
+			TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_Fire_3.SW_MagicImpact_Fire_3"));
+	}
+	if (SoundName.Contains(TEXT("Fireball")) || SoundName.Contains(TEXT("BasicBolt_Ignis")) || SoundName.Contains(TEXT("SelfCast_Ignis")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_FireBall1_1.SW_MagicCast_FireBall1_1"),
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_FireBall2_1.SW_MagicCast_FireBall2_1"));
+	}
+	if (SoundName.Contains(TEXT("Macropyre")))
+	{
+		return TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_FireTrail_1.SW_MagicSpell_FireTrail_1");
+	}
+	if (SoundName.Contains(TEXT("SunStrike")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/D2_Beam/Mono/SW_MagicBeam_Light1_1.SW_MagicBeam_Light1_1"),
+			TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_Fire_1.SW_MagicImpact_Fire_1"));
+	}
+
+	// --- Black Hole, Void & Gravity Spells ---
+	if (SoundName.Contains(TEXT("BlackHole_Collapse")) || SoundName.Contains(TEXT("BlackHole_SolarIgnite")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_EarthQuake_1.SW_MagicSpell_EarthQuake_1"),
+			TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_RockExplosion1_1.SW_MagicSpell_RockExplosion1_1"));
+	}
+	if (SoundName.Contains(TEXT("BlackHole")) || SoundName.Contains(TEXT("RequiemBlast")))
+	{
+		return Choose3(
+			TEXT("/Game/FreeModularMagicSFX/B_Transition/Mono/SW_MagicFade_Bass1_1.SW_MagicFade_Bass1_1"),
+			TEXT("/Game/RPG_Fantasy_SFX/Dark/1__1_.1__1_"),
+			TEXT("/Game/RPG_Fantasy_SFX/Dark/1__2_.1__2_"));
+	}
+	if (SoundName.Contains(TEXT("GravityCataclysm")) || SoundName.Contains(TEXT("CataclysmNova")) || SoundName.Contains(TEXT("PrimalOverload")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_EarthQuake_1.SW_MagicSpell_EarthQuake_1"),
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_GroundStrike_1.SW_MagicCast_GroundStrike_1"));
+	}
+
+	// --- Lightning, Storm & Beam Spells ---
+	if (SoundName.Contains(TEXT("ChainLightning")) || SoundName.Contains(TEXT("Lightning")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_LightningStrike_1.SW_MagicImpact_LightningStrike_1"),
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_Lightning1_1.SW_MagicCast_Lightning1_1"));
+	}
+	if (SoundName.Contains(TEXT("PlasmaField")) || SoundName.Contains(TEXT("EyeOfTheStorm")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_LightningStrikesLine_1.SW_MagicSpell_LightningStrikesLine_1"),
+			TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_LightningStrikeMulti_1.SW_MagicImpact_LightningStrikeMulti_1"));
+	}
+	if (SoundName.Contains(TEXT("SupernovaBeam")) || SoundName.Contains(TEXT("Beam")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/D2_Beam/Mono/SW_MagicBeam_HoldStrongBlast_1.SW_MagicBeam_HoldStrongBlast_1"),
+			TEXT("/Game/FreeModularMagicSFX/D2_Beam/Mono/SW_MagicBeam_Light1_1.SW_MagicBeam_Light1_1"));
+	}
+
+	// --- Chrono, Frost, Barrier & Portal Spells ---
+	if (SoundName.Contains(TEXT("Chronosphere")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/D1_Spell/Mono/SW_MagicSpell_FreezingWind_1.SW_MagicSpell_FreezingWind_1"),
+			TEXT("/Game/FreeModularMagicSFX/B_Transition/Mono/SW_MagicFade_Appear1_1.SW_MagicFade_Appear1_1"));
+	}
+	if (SoundName.Contains(TEXT("ChronoBlink")) || SoundName.Contains(TEXT("Dash")) || SoundName.Contains(TEXT("Portal")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/B_Transition/Mono/SW_MagicFade_Appear2_1.SW_MagicFade_Appear2_1"),
+			TEXT("/Game/FreeModularMagicSFX/A_Chant/Mono/SW_MagicChant_WindCharge_1.SW_MagicChant_WindCharge_1"));
+	}
+	if (SoundName.Contains(TEXT("Prism")) || SoundName.Contains(TEXT("CryoShatter")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_CreatingBarrier1_1.SW_MagicCast_CreatingBarrier1_1"),
+			TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_Crystal_1.SW_MagicImpact_Crystal_1"));
+	}
+	if (SoundName.Contains(TEXT("ThermalShock")))
+	{
+		return TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_LightningStrike_1.SW_MagicImpact_LightningStrike_1");
+	}
+
+	// --- Basic Bolts, Orbs & Invoke ---
+	if (SoundName.Contains(TEXT("BasicBolt")) || SoundName.Contains(TEXT("Enemy_Ranged_Cast")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_Projectile1_1.SW_MagicCast_Projectile1_1"),
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_Projectile2_1.SW_MagicCast_Projectile2_1"));
+	}
+	if (SoundName.Contains(TEXT("OrbQ")) || SoundName.Contains(TEXT("OrbW")) || SoundName.Contains(TEXT("OrbE")) || SoundName.Contains(TEXT("SelfCast")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/A_Chant/Mono/SW_MagicChant_Charge1_1.SW_MagicChant_Charge1_1"),
+			TEXT("/Game/FreeModularMagicSFX/A_Chant/Mono/SW_MagicChant_ChargePulse1_1.SW_MagicChant_ChargePulse1_1"));
+	}
+	if (SoundName.Contains(TEXT("Invoke")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_Buff1_1.SW_MagicCast_Buff1_1"),
+			TEXT("/Game/RPG_Fantasy_SFX/Enchantment/1__1_.1__1_"));
+	}
+
+	// --- Combat Hits, Shields, Boss & Mob SFX ---
+	if (SoundName.Contains(TEXT("Hit_Shield")) || SoundName.Contains(TEXT("Hit_Armor")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_Barrier_1.SW_MagicImpact_Barrier_1"),
+			TEXT("/Game/RPG_Fantasy_SFX/Shields/10__1_.10__1_"));
+	}
+	if (SoundName.Contains(TEXT("Hit_")) || SoundName.Contains(TEXT("HitImpact")) || SoundName.Contains(TEXT("Wall_Slam")) || SoundName.Contains(TEXT("Swarm_Slash")))
+	{
+		return Choose2(
+			TEXT("/Game/RPG_Fantasy_SFX/Combat/5__1_.5__1_"),
+			TEXT("/Game/RPG_Fantasy_SFX/Combat/5__2_.5__2_"));
+	}
+	if (SoundName.Contains(TEXT("BossRoar")) || SoundName.Contains(TEXT("Boss_Roar")))
+	{
+		return TEXT("/Game/RPG_Fantasy_SFX/Dragons/1__1_.1__1_");
+	}
+	if (SoundName.Contains(TEXT("Boss_Slam")) || SoundName.Contains(TEXT("Bruiser_Slam")) || SoundName.Contains(TEXT("Boss_Melee")))
+	{
+		return Choose2(
+			TEXT("/Game/RPG_Fantasy_SFX/Giant/1__1_.1__1_"),
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_StaffStrikeGround_1.SW_MagicCast_StaffStrikeGround_1"));
+	}
+	if (SoundName.Contains(TEXT("Boss_Death")) || SoundName.Contains(TEXT("MobDeath")))
+	{
+		return Choose2(
+			TEXT("/Game/RPG_Fantasy_SFX/Undead/1__1_.1__1_"),
+			TEXT("/Game/RPG_Fantasy_SFX/Creature/1__1_.1__1_"));
+	}
+
+	// --- Healing, Progression, Objectives & UI ---
+	if (SoundName.Contains(TEXT("Flask")) || SoundName.Contains(TEXT("Revive")) || SoundName.Contains(TEXT("Healing")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_Healing_1.SW_MagicCast_Healing_1"),
+			TEXT("/Game/RPG_Fantasy_SFX/Healing/7__1_.7__1_"));
+	}
+	if (SoundName.Contains(TEXT("LevelUp")) || SoundName.Contains(TEXT("Beacon")) || SoundName.Contains(TEXT("Obelisk")) || SoundName.Contains(TEXT("Relic")))
+	{
+		return Choose2(
+			TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_Buff2_1.SW_MagicCast_Buff2_1"),
+			TEXT("/Game/RPG_Fantasy_SFX/Enchantment/1__2_.1__2_"));
+	}
+	if (SoundName.Contains(TEXT("Pylon_Shatter")))
+	{
+		return TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_Crystal_1.SW_MagicImpact_Crystal_1");
+	}
+	if (SoundName.Contains(TEXT("Forge_Anvil")) || SoundName.Contains(TEXT("Anvil")))
+	{
+		return TEXT("/Game/FreeModularMagicSFX/E_Impact/Mono/SW_MagicImpact_Metallic_1.SW_MagicImpact_Metallic_1");
+	}
+	if (SoundName.Contains(TEXT("PageTurn")))
+	{
+		return TEXT("/Game/RPG_Fantasy_SFX/Books/1.1");
+	}
+	if (SoundName.Contains(TEXT("Step_")) || SoundName.Contains(TEXT("Footstep")))
+	{
+		return TEXT("/Game/RPG_Fantasy_SFX/Swing/1__1_.1__1_");
+	}
+	if (SoundName.Contains(TEXT("Deny")) || SoundName.Contains(TEXT("Party_Wipe")))
+	{
+		return TEXT("/Game/FreeModularMagicSFX/B_Transition/Mono/SW_MagicFade_FadeOut1_1.SW_MagicFade_FadeOut1_1");
+	}
+	if (SoundName.Contains(TEXT("UIClick")) || SoundName.Contains(TEXT("UI_Hover")) || SoundName.Contains(TEXT("MoveClick")))
+	{
+		return Choose2(
+			TEXT("/Game/RPG_Fantasy_SFX/Inventory/1.1"),
+			TEXT("/Game/RPG_Fantasy_SFX/Inventory/2.2"));
+	}
+	if (SoundName.Contains(TEXT("Banner")))
+	{
+		return TEXT("/Game/RPG_Fantasy_SFX/Magical/3__1_.3__1_");
+	}
+
+	return Choose2(
+		TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_Generic1_1.SW_MagicCast_Generic1_1"),
+		TEXT("/Game/RPG_Fantasy_SFX/Spell/8__1_.8__1_"));
 }
 
 static USoundBase* ResolvePlayableAudioAsset(const FString& SoundName)
 {
-	static TMap<FString, TWeakObjectPtr<USoundBase>> CookedSoundCache;
-	if (const TWeakObjectPtr<USoundBase>* CachedCooked = CookedSoundCache.Find(SoundName))
-	{
-		if (CachedCooked->IsValid())
-		{
-			return CachedCooked->Get();
-		}
-	}
+	static TMap<FString, TWeakObjectPtr<USoundBase>> SoundPathCache;
+	static TSet<FString> LoggedAudioNames;
 
-	const FString PkgPath = FString::Printf(TEXT("/Game/Audio/%s"), *SoundName);
-	const FString CookedPath = FString::Printf(TEXT("/Game/Audio/%s.%s"), *SoundName, *SoundName);
-	if (FPackageName::DoesPackageExist(PkgPath))
+	auto LoadCachedPath = [&](const FString& ObjPath) -> USoundBase*
 	{
-		if (USoundBase* Cooked = LoadObject<USoundBase>(nullptr, *CookedPath))
+		if (const TWeakObjectPtr<USoundBase>* Cached = SoundPathCache.Find(ObjPath))
 		{
-			CookedSoundCache.Add(SoundName, Cooked);
-			return Cooked;
-		}
-	}
-
-	static TMap<FString, FAetheriaCachedRawWav> RawWavCache;
-	FAetheriaCachedRawWav* RawWav = RawWavCache.Find(SoundName);
-	if (!RawWav)
-	{
-		FAetheriaCachedRawWav Parsed;
-		const FString RawPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("RawAssets/Audio") / (SoundName + TEXT(".wav")));
-		if (FPaths::FileExists(RawPath))
-		{
-			TArray<uint8> Bytes;
-			if (FFileHelper::LoadFileToArray(Bytes, *RawPath))
+			if (Cached->IsValid())
 			{
-				ParseWavRiffBytes(Bytes, Parsed);
+				return Cached->Get();
 			}
 		}
-		RawWav = &RawWavCache.Add(SoundName, MoveTemp(Parsed));
+		if (USoundBase* Loaded = LoadObject<USoundBase>(nullptr, *ObjPath, nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			SoundPathCache.Add(ObjPath, Loaded);
+			return Loaded;
+		}
+		return nullptr;
+	};
+
+	// Keep BGM tracks routed cleanly to cooked /Game/Audio/BGM_* packages if requested
+	if (SoundName.StartsWith(TEXT("BGM_")))
+	{
+		const FString BgmPath = FString::Printf(TEXT("/Game/Audio/%s.%s"), *SoundName, *SoundName);
+		return LoadCachedPath(BgmPath);
 	}
 
-	if (RawWav && RawWav->bValid && RawWav->PCMData.Num() > 0)
+	// Route ALL SFX strictly to clean studio-mastered Fab USoundWave packs (NEVER raw crackling USoundWaveProcedural!)
+	const FString FabPath = PickStudioFabSoundPath(SoundName);
+	if (USoundBase* FabSound = LoadCachedPath(FabPath))
 	{
-		USoundWaveProcedural* Sw = NewObject<USoundWaveProcedural>(GetTransientPackage());
-		if (Sw)
+		if (LoggedAudioNames.Num() < 16 && !LoggedAudioNames.Contains(SoundName))
 		{
-			Sw->SetSampleRate(RawWav->SampleRate);
-			Sw->NumChannels = RawWav->NumChannels;
-			Sw->Duration = RawWav->Duration;
-			Sw->bLooping = false;
-			Sw->SoundGroup = SOUNDGROUP_Effects;
-			Sw->QueueAudio(RawWav->PCMData.GetData(), RawWav->PCMData.Num());
-			return Sw;
+			LoggedAudioNames.Add(SoundName);
+			UE_LOG(LogTemp, Display, TEXT("[AetheriaAudio] Routed %s -> Fab Studio %s"), *SoundName, *FabPath);
 		}
+		return FabSound;
 	}
-	return nullptr;
+
+	// Verified studio fallback if a specific asset wasn't cooked yet
+	static const FString FallbackFabPath(TEXT("/Game/FreeModularMagicSFX/C_Cast/Mono/SW_MagicCast_Generic1_1.SW_MagicCast_Generic1_1"));
+	return LoadCachedPath(FallbackFabPath);
 }
 
 static bool PassSoundAntiSpamThrottle(const FString& SoundName)
 {
-	static TMap<FString, double> LastPlaySec;
-	const double NowSec = FPlatformTime::Seconds();
-	const double CooldownSec = SoundName.StartsWith(TEXT("SFX_Banner")) ? 1.50 : 0.04;
-	if (const double* PrevSec = LastPlaySec.Find(SoundName))
+	struct FCueThrottleState
 	{
-		if ((NowSec - *PrevSec) < CooldownSec)
-		{
-			return false;
-		}
+		double LastPlaySec = -100.0;
+		double WindowStartSec = -100.0;
+		int32 WindowCount = 0;
+	};
+	static TMap<FString, FCueThrottleState> ThrottleMap;
+
+	const double NowSec = FPlatformTime::Seconds();
+	double CooldownSec = 0.09;
+	if (SoundName.StartsWith(TEXT("SFX_Banner")))
+	{
+		CooldownSec = 1.50;
 	}
-	LastPlaySec.Add(SoundName, NowSec);
+	else if (SoundName.Contains(TEXT("Step_")) || SoundName.Contains(TEXT("Footstep")) || SoundName.Contains(TEXT("Hit_")) || SoundName.Contains(TEXT("UI")))
+	{
+		CooldownSec = 0.14;
+	}
+
+	FCueThrottleState& State = ThrottleMap.FindOrAdd(SoundName);
+	if ((NowSec - State.LastPlaySec) < CooldownSec)
+	{
+		return false;
+	}
+	if ((NowSec - State.WindowStartSec) > 0.45)
+	{
+		State.WindowStartSec = NowSec;
+		State.WindowCount = 0;
+	}
+	// Hard per-cue concurrency cap: max 3 triggers per 0.45s window to prevent voice stacking / clipping!
+	if (State.WindowCount >= 3)
+	{
+		return false;
+	}
+
+	State.LastPlaySec = NowSec;
+	State.WindowCount += 1;
 	return true;
 }
 
@@ -380,28 +606,39 @@ USoundBase* UAetheriaMaterialLibrary::LoadOrImportSound(const FString& SoundName
 void UAetheriaMaterialLibrary::PlayGameSound2D(const UObject* WorldContextObject, const FString& SoundName, float VolumeMultiplier)
 {
 	if (!WorldContextObject || IsSilentAudioTestMode()) return;
-	const float FinalVolume = VolumeMultiplier * GGlobalAudioVolume;
-	if (FinalVolume <= 0.001f) return;
+	// Soft volume cap (<= 0.62) eliminates ear-piercing spikes across UI and 2D combat cues
+	const float SoftVolume = FMath::Clamp(VolumeMultiplier * GGlobalAudioVolume * 0.72f, 0.0f, 0.62f);
+	if (SoftVolume <= 0.001f) return;
 	if (!PassSoundAntiSpamThrottle(SoundName)) return;
 
 	if (USoundBase* Sound = ResolvePlayableAudioAsset(SoundName))
 	{
-		const float Pitch = FMath::FRandRange(0.96f, 1.04f);
-		UGameplayStatics::PlaySound2D(WorldContextObject, Sound, FinalVolume, Pitch);
+		const float Pitch = FMath::FRandRange(0.94f, 1.06f);
+		UGameplayStatics::PlaySound2D(WorldContextObject, Sound, SoftVolume, Pitch, 0.0f, GetAetheriaSharedSFXConcurrency());
 	}
 }
 
 void UAetheriaMaterialLibrary::PlayGameSoundAtLocation(const UObject* WorldContextObject, const FString& SoundName, FVector Location, float VolumeMultiplier, float PitchMultiplier)
 {
 	if (!WorldContextObject || IsSilentAudioTestMode()) return;
-	const float FinalVolume = VolumeMultiplier * GGlobalAudioVolume;
-	if (FinalVolume <= 0.001f) return;
+	// Soft volume cap (<= 0.62) + smooth 3D logarithmic attenuation + MaxCount=3 concurrency
+	const float SoftVolume = FMath::Clamp(VolumeMultiplier * GGlobalAudioVolume * 0.72f, 0.0f, 0.62f);
+	if (SoftVolume <= 0.001f) return;
 	if (!PassSoundAntiSpamThrottle(SoundName)) return;
 
 	if (USoundBase* Sound = ResolvePlayableAudioAsset(SoundName))
 	{
-		const float OrganicPitch = PitchMultiplier * FMath::FRandRange(0.95f, 1.05f);
-		UGameplayStatics::PlaySoundAtLocation(WorldContextObject, Sound, Location, FinalVolume, OrganicPitch);
+		const float ClampedBasePitch = FMath::Clamp(PitchMultiplier, 0.88f, 1.12f);
+		const float OrganicPitch = ClampedBasePitch * FMath::FRandRange(0.94f, 1.06f);
+		UGameplayStatics::PlaySoundAtLocation(
+			WorldContextObject,
+			Sound,
+			Location,
+			SoftVolume,
+			OrganicPitch,
+			0.0f,
+			GetAetheriaSharedSFXAttenuation(),
+			GetAetheriaSharedSFXConcurrency());
 	}
 }
 
@@ -792,6 +1029,31 @@ UMaterialInterface* UAetheriaMaterialLibrary::GetEmissiveCoreMaterial(UObject* O
 	return Mat;
 }
 
+UMaterialInterface* UAetheriaMaterialLibrary::GetMobRimOverlayMaterial(UObject* Outer)
+{
+	static TWeakObjectPtr<UMaterialInterface> Cached;
+	if (Cached.IsValid())
+	{
+		return Cached.Get();
+	}
+
+	UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_AetheriaMobRim.M_AetheriaMobRim"));
+#if WITH_EDITOR
+	if (!Mat)
+	{
+		UPackage* Package = CreatePackage(TEXT("/Game/Materials/M_AetheriaMobRim"));
+		Mat = BuildMobRimOverlayShaderGraph(Package, TEXT("M_AetheriaMobRim"));
+	}
+#endif
+	if (!Mat)
+	{
+		Mat = GetEmissiveCoreMaterial(Outer);
+	}
+
+	Cached = Mat;
+	return Mat;
+}
+
 UMaterialInterface* UAetheriaMaterialLibrary::GetFireballMaterial(UObject* Outer)
 {
 	static TWeakObjectPtr<UMaterialInterface> Cached;
@@ -982,6 +1244,7 @@ UMaterial* UAetheriaMaterialLibrary::BuildMasterCharacterPBRShaderGraph(UPackage
 	Mat->SetShadingModel(MSM_DefaultLit);
 	Mat->TwoSided = false;
 	Mat->bUsedWithInstancedStaticMeshes = true;
+	Mat->bUsedWithSkeletalMesh = true;
 	Mat->bUsedWithStaticLighting = false;
 
 	// 1. Albedo Map Parameter
@@ -1219,6 +1482,7 @@ UMaterial* UAetheriaMaterialLibrary::BuildObsidianShaderGraph(UPackage* Package,
 	Mat->SetShadingModel(MSM_DefaultLit);
 	Mat->TwoSided = false;
 	Mat->bUsedWithInstancedStaticMeshes = true;
+	Mat->bUsedWithSkeletalMesh = true;
 	Mat->bUsedWithStaticLighting = false;
 
 	// Base Obsidian Color (#09090F)
@@ -1298,6 +1562,7 @@ UMaterial* UAetheriaMaterialLibrary::BuildTexturedPBRShaderGraph(
 	Mat->SetShadingModel(MSM_DefaultLit);
 	Mat->TwoSided = false;
 	Mat->bUsedWithInstancedStaticMeshes = true;
+	Mat->bUsedWithSkeletalMesh = true;
 	Mat->bUsedWithStaticLighting = false;
 
 	UMaterialExpressionTextureCoordinate* TexCoord = Cast<UMaterialExpressionTextureCoordinate>(
@@ -1308,6 +1573,84 @@ UMaterial* UAetheriaMaterialLibrary::BuildTexturedPBRShaderGraph(
 		TexCoord->VTiling = DefaultUVTiling;
 	}
 
+	const bool bApplyMacroBreakup = (DefaultUVTiling >= 2.0f);
+	UMaterialExpressionAdd* MacroUV = nullptr;
+	UMaterialExpressionNoise* MacroBlendNoise = nullptr;
+	UMaterialExpressionNoise* GrungeNoise = nullptr;
+	if (bApplyMacroBreakup)
+	{
+		UMaterialExpressionWorldPosition* WorldPos = Cast<UMaterialExpressionWorldPosition>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionWorldPosition::StaticClass(), -1550, -320));
+		UMaterialExpressionComponentMask* WorldXY = Cast<UMaterialExpressionComponentMask>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionComponentMask::StaticClass(), -1380, -320));
+		UMaterialExpressionConstant2Vector* RotRow0 = Cast<UMaterialExpressionConstant2Vector>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionConstant2Vector::StaticClass(), -1380, -180));
+		UMaterialExpressionConstant2Vector* RotRow1 = Cast<UMaterialExpressionConstant2Vector>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionConstant2Vector::StaticClass(), -1380, -60));
+		UMaterialExpressionDotProduct* DotU = Cast<UMaterialExpressionDotProduct>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionDotProduct::StaticClass(), -1180, -240));
+		UMaterialExpressionDotProduct* DotV = Cast<UMaterialExpressionDotProduct>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionDotProduct::StaticClass(), -1180, -100));
+		UMaterialExpressionAppendVector* RotUV = Cast<UMaterialExpressionAppendVector>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionAppendVector::StaticClass(), -1020, -170));
+		UMaterialExpressionConstant2Vector* MacroOffset = Cast<UMaterialExpressionConstant2Vector>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionConstant2Vector::StaticClass(), -1020, -40));
+		MacroUV = Cast<UMaterialExpressionAdd>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionAdd::StaticClass(), -860, -150));
+
+		if (WorldXY)
+		{
+			WorldXY->R = 1;
+			WorldXY->G = 1;
+			WorldXY->B = 0;
+			WorldXY->A = 0;
+		}
+		if (RotRow0) { RotRow0->R = 0.00068f; RotRow0->G = -0.00051f; }
+		if (RotRow1) { RotRow1->R = 0.00051f; RotRow1->G = 0.00068f; }
+		if (MacroOffset) { MacroOffset->R = 0.37f; MacroOffset->G = 0.61f; }
+
+		if (WorldPos && WorldXY && RotRow0 && RotRow1 && DotU && DotV && RotUV && MacroOffset && MacroUV)
+		{
+			WorldXY->Input.Connect(0, WorldPos);
+			UMaterialEditingLibrary::ConnectMaterialExpressions(WorldXY, TEXT(""), DotU, TEXT("A"));
+			UMaterialEditingLibrary::ConnectMaterialExpressions(RotRow0, TEXT(""), DotU, TEXT("B"));
+			UMaterialEditingLibrary::ConnectMaterialExpressions(WorldXY, TEXT(""), DotV, TEXT("A"));
+			UMaterialEditingLibrary::ConnectMaterialExpressions(RotRow1, TEXT(""), DotV, TEXT("B"));
+			UMaterialEditingLibrary::ConnectMaterialExpressions(DotU, TEXT(""), RotUV, TEXT("A"));
+			UMaterialEditingLibrary::ConnectMaterialExpressions(DotV, TEXT(""), RotUV, TEXT("B"));
+			UMaterialEditingLibrary::ConnectMaterialExpressions(RotUV, TEXT(""), MacroUV, TEXT("A"));
+			UMaterialEditingLibrary::ConnectMaterialExpressions(MacroOffset, TEXT(""), MacroUV, TEXT("B"));
+		}
+
+		MacroBlendNoise = Cast<UMaterialExpressionNoise>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionNoise::StaticClass(), -1050, -480));
+		if (MacroBlendNoise && WorldPos)
+		{
+			MacroBlendNoise->NoiseFunction = NOISEFUNCTION_SimplexTex;
+			MacroBlendNoise->Scale = 0.0022f;
+			MacroBlendNoise->Quality = 1;
+			MacroBlendNoise->bTurbulence = false;
+			MacroBlendNoise->Levels = 3;
+			MacroBlendNoise->OutputMin = 0.0f;
+			MacroBlendNoise->OutputMax = 0.48f;
+			UMaterialEditingLibrary::ConnectMaterialExpressions(WorldPos, TEXT(""), MacroBlendNoise, TEXT("Position"));
+		}
+
+		GrungeNoise = Cast<UMaterialExpressionNoise>(
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionNoise::StaticClass(), -1050, 220));
+		if (GrungeNoise && WorldPos)
+		{
+			GrungeNoise->NoiseFunction = NOISEFUNCTION_SimplexTex;
+			GrungeNoise->Scale = 0.0075f;
+			GrungeNoise->Quality = 1;
+			GrungeNoise->bTurbulence = true;
+			GrungeNoise->Levels = 2;
+			GrungeNoise->OutputMin = 0.76f;
+			GrungeNoise->OutputMax = 1.15f;
+			UMaterialEditingLibrary::ConnectMaterialExpressions(WorldPos, TEXT(""), GrungeNoise, TEXT("Position"));
+		}
+	}
+
 	if (AlbedoTex)
 	{
 		UMaterialExpressionTextureSample* AlbSample = Cast<UMaterialExpressionTextureSample>(
@@ -1315,7 +1658,7 @@ UMaterial* UAetheriaMaterialLibrary::BuildTexturedPBRShaderGraph(
 		UMaterialExpressionVectorParameter* TintParam = Cast<UMaterialExpressionVectorParameter>(
 			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionVectorParameter::StaticClass(), -600, -50));
 		UMaterialExpressionMultiply* AlbMult = Cast<UMaterialExpressionMultiply>(
-			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -260, -180));
+			UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -140, -180));
 		if (AlbSample && TintParam && AlbMult)
 		{
 			AlbSample->Texture = AlbedoTex;
@@ -1326,7 +1669,51 @@ UMaterial* UAetheriaMaterialLibrary::BuildTexturedPBRShaderGraph(
 			{
 				UMaterialEditingLibrary::ConnectMaterialExpressions(TexCoord, TEXT(""), AlbSample, TEXT("UVs"));
 			}
-			UMaterialEditingLibrary::ConnectMaterialExpressions(AlbSample, TEXT("RGB"), AlbMult, TEXT("A"));
+
+			UMaterialExpression* FinalAlbExpr = AlbSample;
+			const TCHAR* FinalAlbOut = TEXT("RGB");
+
+			if (bApplyMacroBreakup && MacroUV && MacroBlendNoise && GrungeNoise)
+			{
+				UMaterialExpressionTextureSample* AlbMacroSample = Cast<UMaterialExpressionTextureSample>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionTextureSample::StaticClass(), -600, -520));
+				UMaterialExpressionMultiply* PrimaryWeight = Cast<UMaterialExpressionMultiply>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -420, -380));
+				UMaterialExpressionMultiply* MacroWeight = Cast<UMaterialExpressionMultiply>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -420, -520));
+				UMaterialExpressionAdd* MixedTone = Cast<UMaterialExpressionAdd>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionAdd::StaticClass(), -300, -450));
+				UMaterialExpressionLinearInterpolate* MacroLerp = Cast<UMaterialExpressionLinearInterpolate>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionLinearInterpolate::StaticClass(), -260, -320));
+				UMaterialExpressionMultiply* GrungeMult = Cast<UMaterialExpressionMultiply>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -200, -260));
+
+				if (AlbMacroSample && PrimaryWeight && MacroWeight && MixedTone && MacroLerp && GrungeMult)
+				{
+					AlbMacroSample->Texture = AlbedoTex;
+					AlbMacroSample->SamplerType = SAMPLERTYPE_Color;
+					UMaterialEditingLibrary::ConnectMaterialExpressions(MacroUV, TEXT(""), AlbMacroSample, TEXT("UVs"));
+
+					PrimaryWeight->ConstB = 0.52f;
+					MacroWeight->ConstB = 0.52f;
+					UMaterialEditingLibrary::ConnectMaterialExpressions(AlbSample, TEXT("RGB"), PrimaryWeight, TEXT("A"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(AlbMacroSample, TEXT("RGB"), MacroWeight, TEXT("A"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(PrimaryWeight, TEXT(""), MixedTone, TEXT("A"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(MacroWeight, TEXT(""), MixedTone, TEXT("B"));
+
+					UMaterialEditingLibrary::ConnectMaterialExpressions(AlbSample, TEXT("RGB"), MacroLerp, TEXT("A"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(MixedTone, TEXT(""), MacroLerp, TEXT("B"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(MacroBlendNoise, TEXT(""), MacroLerp, TEXT("Alpha"));
+
+					UMaterialEditingLibrary::ConnectMaterialExpressions(MacroLerp, TEXT(""), GrungeMult, TEXT("A"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(GrungeNoise, TEXT(""), GrungeMult, TEXT("B"));
+
+					FinalAlbExpr = GrungeMult;
+					FinalAlbOut = TEXT("");
+				}
+			}
+
+			UMaterialEditingLibrary::ConnectMaterialExpressions(FinalAlbExpr, FinalAlbOut, AlbMult, TEXT("A"));
 			UMaterialEditingLibrary::ConnectMaterialExpressions(TintParam, TEXT(""), AlbMult, TEXT("B"));
 			UMaterialEditingLibrary::ConnectMaterialProperty(AlbMult, TEXT(""), MP_BaseColor);
 		}
@@ -1360,7 +1747,56 @@ UMaterial* UAetheriaMaterialLibrary::BuildTexturedPBRShaderGraph(
 			{
 				UMaterialEditingLibrary::ConnectMaterialExpressions(TexCoord, TEXT(""), RghSample, TEXT("UVs"));
 			}
-			UMaterialEditingLibrary::ConnectMaterialProperty(RghSample, TEXT("R"), MP_Roughness);
+			if (bApplyMacroBreakup && MacroUV && GrungeNoise)
+			{
+				UMaterialExpressionTextureSample* RghMacroSample = Cast<UMaterialExpressionTextureSample>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionTextureSample::StaticClass(), -600, 520));
+				UMaterialExpressionConstant* RoughAlphaConst = Cast<UMaterialExpressionConstant>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionConstant::StaticClass(), -480, 620));
+				UMaterialExpressionLinearInterpolate* RghLerp = Cast<UMaterialExpressionLinearInterpolate>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionLinearInterpolate::StaticClass(), -380, 440));
+				UMaterialExpressionSubtract* GrungeCenter = Cast<UMaterialExpressionSubtract>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionSubtract::StaticClass(), -520, 260));
+				UMaterialExpressionMultiply* GrungeScale = Cast<UMaterialExpressionMultiply>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -380, 260));
+				UMaterialExpressionAdd* RghMod = Cast<UMaterialExpressionAdd>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionAdd::StaticClass(), -240, 380));
+				UMaterialExpressionClamp* RghClamp = Cast<UMaterialExpressionClamp>(
+					UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionClamp::StaticClass(), -120, 380));
+
+				if (RghMacroSample && RoughAlphaConst && RghLerp && GrungeCenter && GrungeScale && RghMod && RghClamp)
+				{
+					RghMacroSample->Texture = RoughTex;
+					RghMacroSample->SamplerType = SAMPLERTYPE_LinearColor;
+					UMaterialEditingLibrary::ConnectMaterialExpressions(MacroUV, TEXT(""), RghMacroSample, TEXT("UVs"));
+
+					RoughAlphaConst->R = 0.30f;
+					UMaterialEditingLibrary::ConnectMaterialExpressions(RghSample, TEXT("R"), RghLerp, TEXT("A"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(RghMacroSample, TEXT("R"), RghLerp, TEXT("B"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(RoughAlphaConst, TEXT(""), RghLerp, TEXT("Alpha"));
+
+					GrungeCenter->ConstB = 0.95f;
+					GrungeScale->ConstB = 0.65f;
+					UMaterialEditingLibrary::ConnectMaterialExpressions(GrungeNoise, TEXT(""), GrungeCenter, TEXT("A"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(GrungeCenter, TEXT(""), GrungeScale, TEXT("A"));
+
+					UMaterialEditingLibrary::ConnectMaterialExpressions(RghLerp, TEXT(""), RghMod, TEXT("A"));
+					UMaterialEditingLibrary::ConnectMaterialExpressions(GrungeScale, TEXT(""), RghMod, TEXT("B"));
+
+					RghClamp->MinDefault = 0.22f;
+					RghClamp->MaxDefault = 0.96f;
+					RghClamp->Input.Connect(0, RghMod);
+					UMaterialEditingLibrary::ConnectMaterialProperty(RghClamp, TEXT(""), MP_Roughness);
+				}
+				else
+				{
+					UMaterialEditingLibrary::ConnectMaterialProperty(RghSample, TEXT("R"), MP_Roughness);
+				}
+			}
+			else
+			{
+				UMaterialEditingLibrary::ConnectMaterialProperty(RghSample, TEXT("R"), MP_Roughness);
+			}
 		}
 	}
 
@@ -1419,6 +1855,7 @@ UMaterial* UAetheriaMaterialLibrary::BuildEmissiveCoreShaderGraph(UPackage* Pack
 	Mat->SetShadingModel(MSM_Unlit);
 	Mat->TwoSided = true;
 	Mat->bUsedWithInstancedStaticMeshes = true;
+	Mat->bUsedWithSkeletalMesh = true;
 	Mat->bUsedWithStaticLighting = false;
 
 	UMaterialExpressionVectorParameter* EmissCol = Cast<UMaterialExpressionVectorParameter>(
@@ -1453,6 +1890,121 @@ UMaterial* UAetheriaMaterialLibrary::BuildEmissiveCoreShaderGraph(UPackage* Pack
 	return Mat;
 }
 
+UMaterial* UAetheriaMaterialLibrary::BuildMobRimOverlayShaderGraph(UPackage* Package, const FString& Name)
+{
+	UMaterial* Mat = NewObject<UMaterial>(Package, *Name, RF_Public | RF_Standalone);
+	if (!Mat) return nullptr;
+
+	Mat->BlendMode = BLEND_Additive;
+	Mat->SetShadingModel(MSM_Unlit);
+	Mat->TwoSided = false;
+	Mat->bUsedWithInstancedStaticMeshes = true;
+	Mat->bUsedWithSkeletalMesh = true;
+	Mat->bUsedWithStaticLighting = false;
+
+	UMaterialExpressionFresnel* FresnelExpr = Cast<UMaterialExpressionFresnel>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionFresnel::StaticClass(), -720, -140));
+	if (FresnelExpr)
+	{
+		FresnelExpr->Exponent = 2.4f;
+		FresnelExpr->BaseReflectFraction = 0.04f;
+	}
+
+	UMaterialExpressionVectorParameter* EmissCol = Cast<UMaterialExpressionVectorParameter>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionVectorParameter::StaticClass(), -720, 40));
+	UMaterialExpressionScalarParameter* BoostParam = Cast<UMaterialExpressionScalarParameter>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionScalarParameter::StaticClass(), -720, 200));
+	UMaterialExpressionMultiply* RimColorMult = Cast<UMaterialExpressionMultiply>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -460, -40));
+	UMaterialExpressionMultiply* RimBoostMult = Cast<UMaterialExpressionMultiply>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -260, 40));
+
+	if (EmissCol)
+	{
+		EmissCol->ParameterName = FName("EmissiveColor");
+		EmissCol->DefaultValue = FLinearColor(1.0f, 0.56f, 0.20f, 1.0f);
+	}
+	if (BoostParam)
+	{
+		BoostParam->ParameterName = FName("EmissiveBoost");
+		BoostParam->DefaultValue = 2.1f;
+	}
+
+	UMaterialExpressionVectorParameter* BaseCol = Cast<UMaterialExpressionVectorParameter>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionVectorParameter::StaticClass(), -720, 360));
+	UMaterialExpressionScalarParameter* BaseLift = Cast<UMaterialExpressionScalarParameter>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionScalarParameter::StaticClass(), -720, 520));
+	UMaterialExpressionMultiply* LiftMult = Cast<UMaterialExpressionMultiply>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -420, 420));
+
+	if (BaseCol)
+	{
+		BaseCol->ParameterName = FName("BaseColor");
+		BaseCol->DefaultValue = FLinearColor(1.0f, 0.56f, 0.20f, 1.0f);
+	}
+	if (BaseLift)
+	{
+		BaseLift->ParameterName = FName("BaseLift");
+		BaseLift->DefaultValue = 0.09f;
+	}
+
+	UMaterialExpressionVectorParameter* HitCol = Cast<UMaterialExpressionVectorParameter>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionVectorParameter::StaticClass(), -720, 680));
+	UMaterialExpressionScalarParameter* HitFlash = Cast<UMaterialExpressionScalarParameter>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionScalarParameter::StaticClass(), -720, 840));
+	UMaterialExpressionMultiply* HitColorMult = Cast<UMaterialExpressionMultiply>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -460, 740));
+	UMaterialExpressionMultiply* HitScaleMult = Cast<UMaterialExpressionMultiply>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionMultiply::StaticClass(), -260, 740));
+
+	if (HitCol)
+	{
+		HitCol->ParameterName = FName("HitColor");
+		HitCol->DefaultValue = FLinearColor(1.0f, 0.35f, 0.14f, 1.0f);
+	}
+	if (HitFlash)
+	{
+		HitFlash->ParameterName = FName("HitFlash");
+		HitFlash->DefaultValue = 0.0f;
+	}
+	if (HitScaleMult)
+	{
+		HitScaleMult->ConstB = 5.0f;
+	}
+
+	UMaterialExpressionAdd* RimPlusLift = Cast<UMaterialExpressionAdd>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionAdd::StaticClass(), -80, 200));
+	UMaterialExpressionAdd* FinalEmiss = Cast<UMaterialExpressionAdd>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Mat, UMaterialExpressionAdd::StaticClass(), 100, 380));
+
+	if (FresnelExpr && EmissCol && BoostParam && RimColorMult && RimBoostMult &&
+		BaseCol && BaseLift && LiftMult && HitCol && HitFlash && HitColorMult && HitScaleMult &&
+		RimPlusLift && FinalEmiss)
+	{
+		UMaterialEditingLibrary::ConnectMaterialExpressions(FresnelExpr, TEXT(""), RimColorMult, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(EmissCol, TEXT(""), RimColorMult, TEXT("B"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(RimColorMult, TEXT(""), RimBoostMult, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(BoostParam, TEXT(""), RimBoostMult, TEXT("B"));
+
+		UMaterialEditingLibrary::ConnectMaterialExpressions(BaseCol, TEXT(""), LiftMult, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(BaseLift, TEXT(""), LiftMult, TEXT("B"));
+
+		UMaterialEditingLibrary::ConnectMaterialExpressions(HitCol, TEXT(""), HitColorMult, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(HitFlash, TEXT(""), HitColorMult, TEXT("B"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(HitColorMult, TEXT(""), HitScaleMult, TEXT("A"));
+
+		UMaterialEditingLibrary::ConnectMaterialExpressions(RimBoostMult, TEXT(""), RimPlusLift, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(LiftMult, TEXT(""), RimPlusLift, TEXT("B"));
+
+		UMaterialEditingLibrary::ConnectMaterialExpressions(RimPlusLift, TEXT(""), FinalEmiss, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(HitScaleMult, TEXT(""), FinalEmiss, TEXT("B"));
+		UMaterialEditingLibrary::ConnectMaterialProperty(FinalEmiss, TEXT(""), MP_EmissiveColor);
+	}
+
+	UMaterialEditingLibrary::RecompileMaterial(Mat);
+	return Mat;
+}
+
 UMaterial* UAetheriaMaterialLibrary::BuildFireballShaderGraph(UPackage* Package, const FString& Name)
 {
 	UMaterial* Mat = NewObject<UMaterial>(Package, *Name, RF_Public | RF_Standalone);
@@ -1463,6 +2015,7 @@ UMaterial* UAetheriaMaterialLibrary::BuildFireballShaderGraph(UPackage* Package,
 	Mat->SetShadingModel(MSM_Unlit);
 	Mat->TwoSided = false;
 	Mat->bUsedWithInstancedStaticMeshes = true;
+	Mat->bUsedWithSkeletalMesh = true;
 	Mat->bUsedWithStaticLighting = false;
 
 	auto CreateExpr = [Mat](UClass* ExprClass, int32 X, int32 Y) -> UMaterialExpression*
@@ -1623,11 +2176,14 @@ UMaterial* UAetheriaMaterialLibrary::BuildBlackHoleHorizonShaderGraph(UPackage* 
 	UMaterial* Mat = NewObject<UMaterial>(Package, *Name, RF_Public | RF_Standalone);
 	if (!Mat) return nullptr;
 
-	// True Schwarzschild pitch-black Event Horizon (Unlit 0,0,0 interior) + blinding Photon Ring & bent redshift halo
+	// Interstellar Gargantua Event Horizon:
+	// Absolute light-trapping #000000 interior + razor Fresnel^5.5 multi-band incandescent photon ring
+	// (blazing white-gold inner rim -> fiery amber-orange mid band -> deep violet gravitational redshift edge).
 	Mat->BlendMode = BLEND_Opaque;
 	Mat->SetShadingModel(MSM_Unlit);
 	Mat->TwoSided = false;
 	Mat->bUsedWithInstancedStaticMeshes = true;
+	Mat->bUsedWithSkeletalMesh = true;
 	Mat->bUsedWithStaticLighting = false;
 
 	auto CreateExpr = [Mat](UClass* ExprClass, int32 X, int32 Y) -> UMaterialExpression*
@@ -1635,112 +2191,102 @@ UMaterial* UAetheriaMaterialLibrary::BuildBlackHoleHorizonShaderGraph(UPackage* 
 		return UMaterialEditingLibrary::CreateMaterialExpression(Mat, ExprClass, X, Y);
 	};
 
-	UMaterialExpressionVectorParameter* HaloCol = Cast<UMaterialExpressionVectorParameter>(
-		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -700, -140));
-	UMaterialExpressionVectorParameter* PhotonCol = Cast<UMaterialExpressionVectorParameter>(
-		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -700, 20));
+	UMaterialExpressionVectorParameter* CoreCol = Cast<UMaterialExpressionVectorParameter>(
+		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -760, -240));
+	UMaterialExpressionVectorParameter* MidCol = Cast<UMaterialExpressionVectorParameter>(
+		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -760, -80));
+	UMaterialExpressionVectorParameter* OuterCol = Cast<UMaterialExpressionVectorParameter>(
+		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -760, 80));
+	UMaterialExpressionScalarParameter* ExpParam = Cast<UMaterialExpressionScalarParameter>(
+		CreateExpr(UMaterialExpressionScalarParameter::StaticClass(), -1060, 120));
 	UMaterialExpressionScalarParameter* BoostParam = Cast<UMaterialExpressionScalarParameter>(
-		CreateExpr(UMaterialExpressionScalarParameter::StaticClass(), -700, 180));
-	if (HaloCol)
+		CreateExpr(UMaterialExpressionScalarParameter::StaticClass(), -760, 240));
+
+	if (CoreCol)
 	{
-		HaloCol->ParameterName = FName("EmissiveColor");
-		HaloCol->DefaultValue = AetheriaMindColors::MindViolet;
+		CoreCol->ParameterName = FName("RingCoreColor");
+		CoreCol->DefaultValue = FLinearColor(1.00f, 0.96f, 0.80f, 1.0f); // blazing white-gold
 	}
-	if (PhotonCol)
+	if (MidCol)
 	{
-		PhotonCol->ParameterName = FName("AccentColor");
-		PhotonCol->DefaultValue = FLinearColor(0.95f, 0.98f, 1.0f, 1.0f);
+		MidCol->ParameterName = FName("RingMidColor");
+		MidCol->DefaultValue = FLinearColor(1.00f, 0.52f, 0.10f, 1.0f); // fiery amber-orange
+	}
+	if (OuterCol)
+	{
+		OuterCol->ParameterName = FName("RingOuterColor");
+		OuterCol->DefaultValue = FLinearColor(0.36f, 0.06f, 0.62f, 1.0f); // deep violet redshift
+	}
+	if (ExpParam)
+	{
+		ExpParam->ParameterName = FName("PhotonRingExponent");
+		ExpParam->DefaultValue = 5.5f;
 	}
 	if (BoostParam)
 	{
 		BoostParam->ParameterName = FName("EmissiveBoost");
-		BoostParam->DefaultValue = 20.0f;
+		BoostParam->DefaultValue = 16.0f;
 	}
 
 	UMaterialExpressionFresnel* HorizonFresnel = Cast<UMaterialExpressionFresnel>(
-		CreateExpr(UMaterialExpressionFresnel::StaticClass(), -1050, 0));
+		CreateExpr(UMaterialExpressionFresnel::StaticClass(), -760, -400));
 	if (HorizonFresnel)
 	{
 		HorizonFresnel->Exponent = 5.5f;
 		HorizonFresnel->BaseReflectFraction = 0.0f;
+		if (ExpParam)
+		{
+			HorizonFresnel->ExponentIn.Connect(0, ExpParam);
+		}
 	}
 
-	UMaterialExpressionPower* OuterRedshiftPow = Cast<UMaterialExpressionPower>(
-		CreateExpr(UMaterialExpressionPower::StaticClass(), -820, -120));
-	if (OuterRedshiftPow) OuterRedshiftPow->ConstExponent = 1.6f;
-
-	UMaterialExpressionPower* PhotonRingPow = Cast<UMaterialExpressionPower>(
-		CreateExpr(UMaterialExpressionPower::StaticClass(), -820, 100));
-	if (PhotonRingPow) PhotonRingPow->ConstExponent = 4.5f;
-
-	// Swirling warped light shimmer around shadow edge
 	UMaterialExpressionWorldPosition* WorldPos = Cast<UMaterialExpressionWorldPosition>(
-		CreateExpr(UMaterialExpressionWorldPosition::StaticClass(), -1350, -320));
+		CreateExpr(UMaterialExpressionWorldPosition::StaticClass(), -760, 380));
 	UMaterialExpressionTime* TimeExpr = Cast<UMaterialExpressionTime>(
-		CreateExpr(UMaterialExpressionTime::StaticClass(), -1350, -180));
-	UMaterialExpressionConstant3Vector* WarpDir = Cast<UMaterialExpressionConstant3Vector>(
-		CreateExpr(UMaterialExpressionConstant3Vector::StaticClass(), -1350, -40));
-	if (WarpDir) WarpDir->Constant = FLinearColor(48.0f, -38.0f, 22.0f, 0.0f);
-	UMaterialExpressionMultiply* TimeWarp = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -1150, -140));
-	UMaterialExpressionAdd* WarpedPos = Cast<UMaterialExpressionAdd>(
-		CreateExpr(UMaterialExpressionAdd::StaticClass(), -980, -240));
-	UMaterialExpressionNoise* ShimmerNoise = Cast<UMaterialExpressionNoise>(
-		CreateExpr(UMaterialExpressionNoise::StaticClass(), -800, -300));
-	if (ShimmerNoise)
+		CreateExpr(UMaterialExpressionTime::StaticClass(), -760, 500));
+
+	UMaterialExpressionCustom* HorizonHLSL = Cast<UMaterialExpressionCustom>(
+		CreateExpr(UMaterialExpressionCustom::StaticClass(), -220, 0));
+
+	if (CoreCol && MidCol && OuterCol && BoostParam && HorizonFresnel && WorldPos && TimeExpr && HorizonHLSL)
 	{
-		ShimmerNoise->NoiseFunction = NOISEFUNCTION_SimplexTex;
-		ShimmerNoise->Scale = 0.011f;
-		ShimmerNoise->Quality = 2;
-		ShimmerNoise->bTurbulence = true;
-		ShimmerNoise->Levels = 2;
-		ShimmerNoise->OutputMin = 0.55f;
-		ShimmerNoise->OutputMax = 1.45f;
-	}
+		HorizonHLSL->Description = TEXT("GargantuaEventHorizon");
+		HorizonHLSL->OutputType = ECustomMaterialOutputType::CMOT_Float3;
+		HorizonHLSL->Code = TEXT(
+			"float f = saturate(InFresnel);\n"
+			"// Strict pitch-black (#000000) light-trapping horizon core\n"
+			"float ringGate = smoothstep(0.035, 0.18, f);\n"
+			"float innerBand = pow(f, 2.2);\n"
+			"float outerBand = pow(f, 0.65);\n"
+			"// Subtle relativistic gravitational lensing shimmer around photon sphere limb\n"
+			"float waveA = sin(InWorldPos.x * 0.035 + InTime * 3.8 + InWorldPos.z * 0.028);\n"
+			"float waveB = cos(InWorldPos.y * 0.041 - InTime * 4.6 + InWorldPos.x * 0.022);\n"
+			"float shimmer = 0.84 + 0.16 * (0.5 * (waveA + waveB));\n"
+			"float3 warmMix = lerp(InMidCol, InCoreCol, innerBand);\n"
+			"float3 ringCol = lerp(InOuterCol, warmMix, outerBand);\n"
+			"// Hot razor photon edge at grazing angle\n"
+			"float photonSpike = pow(f, 3.6) * 1.45;\n"
+			"return (ringCol * ringGate * shimmer + InCoreCol * photonSpike) * InBoost;\n"
+		);
 
-	UMaterialExpressionMultiply* ShimmerMask = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -520, -220));
-	UMaterialExpressionMultiply* HaloTerm = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -340, -140));
-	UMaterialExpressionMultiply* PhotonScaled = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -520, 120));
-	if (PhotonScaled) PhotonScaled->ConstB = 1.85f;
-	UMaterialExpressionMultiply* PhotonTerm = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -340, 80));
-	UMaterialExpressionAdd* CombinedRing = Cast<UMaterialExpressionAdd>(
-		CreateExpr(UMaterialExpressionAdd::StaticClass(), -160, -20));
-	UMaterialExpressionMultiply* FinalEmiss = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), 80, 20));
+		HorizonHLSL->Inputs.Reset();
+		auto AddCustomIn = [HorizonHLSL](const TCHAR* InName, UMaterialExpression* Src)
+		{
+			FCustomInput In;
+			In.InputName = FName(InName);
+			In.Input.Connect(0, Src);
+			HorizonHLSL->Inputs.Add(In);
+		};
+		AddCustomIn(TEXT("InFresnel"), HorizonFresnel);
+		AddCustomIn(TEXT("InCoreCol"), CoreCol);
+		AddCustomIn(TEXT("InMidCol"), MidCol);
+		AddCustomIn(TEXT("InOuterCol"), OuterCol);
+		AddCustomIn(TEXT("InBoost"), BoostParam);
+		AddCustomIn(TEXT("InWorldPos"), WorldPos);
+		AddCustomIn(TEXT("InTime"), TimeExpr);
+		HorizonHLSL->RebuildOutputs();
 
-	if (HaloCol && PhotonCol && BoostParam && HorizonFresnel && OuterRedshiftPow && PhotonRingPow &&
-		WorldPos && TimeExpr && WarpDir && TimeWarp && WarpedPos && ShimmerNoise &&
-		ShimmerMask && HaloTerm && PhotonScaled && PhotonTerm && CombinedRing && FinalEmiss)
-	{
-		UMaterialEditingLibrary::ConnectMaterialExpressions(TimeExpr, TEXT(""), TimeWarp, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WarpDir, TEXT(""), TimeWarp, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WorldPos, TEXT(""), WarpedPos, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(TimeWarp, TEXT(""), WarpedPos, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WarpedPos, TEXT(""), ShimmerNoise, TEXT("Position"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(HorizonFresnel, TEXT(""), OuterRedshiftPow, TEXT("Base"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(HorizonFresnel, TEXT(""), PhotonRingPow, TEXT("Base"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(OuterRedshiftPow, TEXT(""), ShimmerMask, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(ShimmerNoise, TEXT(""), ShimmerMask, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(HaloCol, TEXT(""), HaloTerm, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(ShimmerMask, TEXT(""), HaloTerm, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(PhotonRingPow, TEXT(""), PhotonScaled, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(PhotonCol, TEXT(""), PhotonTerm, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(PhotonScaled, TEXT(""), PhotonTerm, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(HaloTerm, TEXT(""), CombinedRing, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(PhotonTerm, TEXT(""), CombinedRing, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(CombinedRing, TEXT(""), FinalEmiss, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(BoostParam, TEXT(""), FinalEmiss, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialProperty(FinalEmiss, TEXT(""), MP_EmissiveColor);
+		UMaterialEditingLibrary::ConnectMaterialProperty(HorizonHLSL, TEXT(""), MP_EmissiveColor);
 	}
 
 	UMaterialEditingLibrary::RecompileMaterial(Mat);
@@ -1752,7 +2298,9 @@ UMaterial* UAetheriaMaterialLibrary::BuildAccretionDiskShaderGraph(UPackage* Pac
 	UMaterial* Mat = NewObject<UMaterial>(Package, *Name, RF_Public | RF_Standalone);
 	if (!Mat) return nullptr;
 
-	// Hollow Relativistic Accretion Disk (0 at center hole & UV square corners) with Doppler beaming & spiral plasma lanes
+	// Interstellar Gargantua Keplerian Accretion Disk:
+	// Differential orbital rotation (omega ~ r^-1.5), multi-band spiral plasma filaments,
+	// relativistic Doppler beaming, blazing white-gold ISCO inner rim -> amber-orange -> crimson/violet outer wisps.
 	Mat->BlendMode = BLEND_Additive;
 	Mat->SetShadingModel(MSM_Unlit);
 	Mat->TwoSided = true;
@@ -1764,220 +2312,106 @@ UMaterial* UAetheriaMaterialLibrary::BuildAccretionDiskShaderGraph(UPackage* Pac
 		return UMaterialEditingLibrary::CreateMaterialExpression(Mat, ExprClass, X, Y);
 	};
 
-	UMaterialExpressionVectorParameter* DiskCol = Cast<UMaterialExpressionVectorParameter>(
-		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -700, -320));
+	UMaterialExpressionTextureCoordinate* UVExpr = Cast<UMaterialExpressionTextureCoordinate>(
+		CreateExpr(UMaterialExpressionTextureCoordinate::StaticClass(), -780, -340));
+	UMaterialExpressionTime* TimeExpr = Cast<UMaterialExpressionTime>(
+		CreateExpr(UMaterialExpressionTime::StaticClass(), -780, -220));
+	UMaterialExpressionVectorParameter* InnerCol = Cast<UMaterialExpressionVectorParameter>(
+		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -780, -80));
+	UMaterialExpressionVectorParameter* MidCol = Cast<UMaterialExpressionVectorParameter>(
+		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -780, 80));
 	UMaterialExpressionVectorParameter* OuterCol = Cast<UMaterialExpressionVectorParameter>(
-		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -700, -160));
+		CreateExpr(UMaterialExpressionVectorParameter::StaticClass(), -780, 240));
+	UMaterialExpressionScalarParameter* OmegaParam = Cast<UMaterialExpressionScalarParameter>(
+		CreateExpr(UMaterialExpressionScalarParameter::StaticClass(), -780, 380));
 	UMaterialExpressionScalarParameter* BoostParam = Cast<UMaterialExpressionScalarParameter>(
-		CreateExpr(UMaterialExpressionScalarParameter::StaticClass(), -300, 420));
-	if (DiskCol)
+		CreateExpr(UMaterialExpressionScalarParameter::StaticClass(), -780, 500));
+
+	if (InnerCol)
 	{
-		DiskCol->ParameterName = FName("EmissiveColor");
-		DiskCol->DefaultValue = AetheriaMindColors::IgnisPlasma;
+		InnerCol->ParameterName = FName("DiskInnerColor");
+		InnerCol->DefaultValue = FLinearColor(1.00f, 0.94f, 0.72f, 1.0f); // incandescent white-gold ISCO
+	}
+	if (MidCol)
+	{
+		MidCol->ParameterName = FName("DiskMidColor");
+		MidCol->DefaultValue = FLinearColor(1.00f, 0.44f, 0.07f, 1.0f); // fiery amber-orange
 	}
 	if (OuterCol)
 	{
-		OuterCol->ParameterName = FName("AccentColor");
-		OuterCol->DefaultValue = AetheriaMindColors::MindViolet;
+		OuterCol->ParameterName = FName("DiskOuterColor");
+		OuterCol->DefaultValue = FLinearColor(0.42f, 0.06f, 0.36f, 1.0f); // crimson-violet outer wisps
+	}
+	if (OmegaParam)
+	{
+		OmegaParam->ParameterName = FName("KeplerOmega");
+		OmegaParam->DefaultValue = 2.6f;
 	}
 	if (BoostParam)
 	{
 		BoostParam->ParameterName = FName("EmissiveBoost");
-		BoostParam->DefaultValue = 22.0f;
+		BoostParam->DefaultValue = 18.0f;
 	}
 
-	// Hollow circular band in UV space: peak r = 0.31, zero inside r <= 0.145 & outside r >= 0.475
-	UMaterialExpressionTextureCoordinate* UV = Cast<UMaterialExpressionTextureCoordinate>(
-		CreateExpr(UMaterialExpressionTextureCoordinate::StaticClass(), -1600, 120));
-	UMaterialExpressionConstant2Vector* Center = Cast<UMaterialExpressionConstant2Vector>(
-		CreateExpr(UMaterialExpressionConstant2Vector::StaticClass(), -1600, 260));
-	if (Center) { Center->R = 0.5f; Center->G = 0.5f; }
+	UMaterialExpressionCustom* DiskHLSL = Cast<UMaterialExpressionCustom>(
+		CreateExpr(UMaterialExpressionCustom::StaticClass(), -220, 40));
 
-	UMaterialExpressionDistance* RadialDist = Cast<UMaterialExpressionDistance>(
-		CreateExpr(UMaterialExpressionDistance::StaticClass(), -1400, 140));
-
-	UMaterialExpressionSubtract* BandSub = Cast<UMaterialExpressionSubtract>(
-		CreateExpr(UMaterialExpressionSubtract::StaticClass(), -1200, 40));
-	if (BandSub) BandSub->ConstB = 0.31f;
-	UMaterialExpressionAbs* BandAbs = Cast<UMaterialExpressionAbs>(
-		CreateExpr(UMaterialExpressionAbs::StaticClass(), -1040, 40));
-	UMaterialExpressionDivide* BandDiv = Cast<UMaterialExpressionDivide>(
-		CreateExpr(UMaterialExpressionDivide::StaticClass(), -880, 40));
-	if (BandDiv) BandDiv->ConstB = 0.165f;
-	UMaterialExpressionOneMinus* BandInv = Cast<UMaterialExpressionOneMinus>(
-		CreateExpr(UMaterialExpressionOneMinus::StaticClass(), -720, 40));
-	UMaterialExpressionClamp* BandClamp = Cast<UMaterialExpressionClamp>(
-		CreateExpr(UMaterialExpressionClamp::StaticClass(), -560, 40));
-	UMaterialExpressionPower* RingMask = Cast<UMaterialExpressionPower>(
-		CreateExpr(UMaterialExpressionPower::StaticClass(), -400, 40));
-	if (RingMask) RingMask->ConstExponent = 1.45f;
-
-	// Blinding white-gold ISCO inner rim at r = 0.21
-	UMaterialExpressionSubtract* InnerSub = Cast<UMaterialExpressionSubtract>(
-		CreateExpr(UMaterialExpressionSubtract::StaticClass(), -1200, 220));
-	if (InnerSub) InnerSub->ConstB = 0.21f;
-	UMaterialExpressionAbs* InnerAbs = Cast<UMaterialExpressionAbs>(
-		CreateExpr(UMaterialExpressionAbs::StaticClass(), -1040, 220));
-	UMaterialExpressionDivide* InnerDiv = Cast<UMaterialExpressionDivide>(
-		CreateExpr(UMaterialExpressionDivide::StaticClass(), -880, 220));
-	if (InnerDiv) InnerDiv->ConstB = 0.065f;
-	UMaterialExpressionOneMinus* InnerInv = Cast<UMaterialExpressionOneMinus>(
-		CreateExpr(UMaterialExpressionOneMinus::StaticClass(), -720, 220));
-	UMaterialExpressionClamp* InnerClamp = Cast<UMaterialExpressionClamp>(
-		CreateExpr(UMaterialExpressionClamp::StaticClass(), -560, 220));
-	UMaterialExpressionPower* InnerHot = Cast<UMaterialExpressionPower>(
-		CreateExpr(UMaterialExpressionPower::StaticClass(), -400, 220));
-	if (InnerHot) InnerHot->ConstExponent = 2.0f;
-
-	// Concentric density wave ripples traveling inward
-	UMaterialExpressionMultiply* WaveFreq = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -1200, 420));
-	if (WaveFreq) WaveFreq->ConstB = 54.0f;
-	UMaterialExpressionTime* TimeExpr = Cast<UMaterialExpressionTime>(
-		CreateExpr(UMaterialExpressionTime::StaticClass(), -1450, 560));
-	UMaterialExpressionMultiply* TimeSpeed = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -1200, 560));
-	if (TimeSpeed) TimeSpeed->ConstB = 6.5f;
-	UMaterialExpressionSubtract* WavePhase = Cast<UMaterialExpressionSubtract>(
-		CreateExpr(UMaterialExpressionSubtract::StaticClass(), -1000, 460));
-	UMaterialExpressionSine* WaveSine = Cast<UMaterialExpressionSine>(
-		CreateExpr(UMaterialExpressionSine::StaticClass(), -840, 460));
-	UMaterialExpressionAbs* WaveAbs = Cast<UMaterialExpressionAbs>(
-		CreateExpr(UMaterialExpressionAbs::StaticClass(), -680, 460));
-	UMaterialExpressionMultiply* WaveAmp = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -520, 460));
-	if (WaveAmp) WaveAmp->ConstB = 0.42f;
-	UMaterialExpressionAdd* WaveMask = Cast<UMaterialExpressionAdd>(
-		CreateExpr(UMaterialExpressionAdd::StaticClass(), -360, 460));
-	if (WaveMask) WaveMask->ConstB = 0.65f;
-
-	// Relativistic turbulent plasma lanes
-	UMaterialExpressionWorldPosition* WorldPos = Cast<UMaterialExpressionWorldPosition>(
-		CreateExpr(UMaterialExpressionWorldPosition::StaticClass(), -1450, -420));
-	UMaterialExpressionConstant3Vector* SwirlDrift = Cast<UMaterialExpressionConstant3Vector>(
-		CreateExpr(UMaterialExpressionConstant3Vector::StaticClass(), -1450, -280));
-	if (SwirlDrift) SwirlDrift->Constant = FLinearColor(95.0f, -75.0f, 30.0f, 0.0f);
-	UMaterialExpressionMultiply* DriftMult = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -1220, -280));
-	UMaterialExpressionAdd* DriftPos = Cast<UMaterialExpressionAdd>(
-		CreateExpr(UMaterialExpressionAdd::StaticClass(), -1040, -360));
-	UMaterialExpressionNoise* PlasmaNoise = Cast<UMaterialExpressionNoise>(
-		CreateExpr(UMaterialExpressionNoise::StaticClass(), -860, -400));
-	if (PlasmaNoise)
+	if (UVExpr && TimeExpr && InnerCol && MidCol && OuterCol && OmegaParam && BoostParam && DiskHLSL)
 	{
-		PlasmaNoise->NoiseFunction = NOISEFUNCTION_SimplexTex;
-		PlasmaNoise->Scale = 0.0085f;
-		PlasmaNoise->Quality = 2;
-		PlasmaNoise->bTurbulence = true;
-		PlasmaNoise->Levels = 3;
-		PlasmaNoise->OutputMin = 0.38f;
-		PlasmaNoise->OutputMax = 1.42f;
-	}
+		DiskHLSL->Description = TEXT("GargantuaKeplerianAccretionDisk");
+		DiskHLSL->OutputType = ECustomMaterialOutputType::CMOT_Float3;
+		DiskHLSL->Code = TEXT(
+			"float2 p = (InUV - 0.5) * 2.0;\n"
+			"float r = length(p);\n"
+			"float theta = atan2(p.y, p.x);\n"
+			"// Smooth hollow core cutout for the black event horizon sphere & soft outer feather\n"
+			"float innerCut = smoothstep(0.23, 0.34, r);\n"
+			"float outerFade = 1.0 - smoothstep(0.56, 0.97, r);\n"
+			"float diskMask = innerCut * outerFade;\n"
+			"if (diskMask <= 0.0005) return float3(0.0, 0.0, 0.0);\n"
+			"// True Keplerian differential angular velocity: omega ~ r^-1.5\n"
+			"float safeR = max(r, 0.24);\n"
+			"float omega = InOmega * pow(safeR, -1.5);\n"
+			"float swirlA = theta - InTime * omega + 5.2 / safeR;\n"
+			"float swirlB = theta * 2.0 - InTime * omega * 1.35 + 9.4 / safeR;\n"
+			"float swirlC = theta * 3.0 - InTime * omega * 0.75 + 14.0 / safeR;\n"
+			"// Multi-band turbulent relativistic plasma filaments + concentric shearing lanes\n"
+			"float arm1 = 0.5 + 0.5 * sin(swirlA * 2.0 + sin(r * 22.0 - InTime * 3.2) * 0.85);\n"
+			"float arm2 = 0.5 + 0.5 * cos(swirlB + r * 34.0 - InTime * 4.5);\n"
+			"float arm3 = 0.5 + 0.5 * sin(swirlC - r * 48.0 + InTime * 2.4);\n"
+			"float ringLanes = 0.65 + 0.35 * sin(r * 52.0 - InTime * 5.0);\n"
+			"float plasma = saturate(arm1 * 0.52 + arm2 * 0.32 + arm3 * 0.26) * ringLanes;\n"
+			"plasma = lerp(0.32, 1.42, pow(plasma, 1.25));\n"
+			"// Relativistic Doppler beaming (approaching side glows brighter & hotter)\n"
+			"float doppler = lerp(0.62, 1.48, 0.5 + 0.5 * cos(theta - 0.65));\n"
+			"// Blazing white-gold ISCO inner rim right outside the Schwarzschild shadow\n"
+			"float isco = exp(-pow((r - 0.335) / 0.062, 2.0));\n"
+			"// Radial blackbody gradient: white-gold ISCO -> fiery amber-orange -> crimson-violet wisps\n"
+			"float radialT = saturate((r - 0.30) / 0.62);\n"
+			"float3 midToOuter = lerp(InMidCol, InOuterCol, smoothstep(0.18, 0.92, radialT));\n"
+			"float3 baseCol = lerp(InInnerCol, midToOuter, smoothstep(0.0, 0.42, radialT));\n"
+			"float3 finalCol = (baseCol * plasma * diskMask + InInnerCol * isco * 1.35 * outerFade) * doppler;\n"
+			"return finalCol * InBoost;\n"
+		);
 
-	// Doppler asymmetric beaming via U axis (0.55 .. 1.45)
-	UMaterialExpressionConstant2Vector* UAxis = Cast<UMaterialExpressionConstant2Vector>(
-		CreateExpr(UMaterialExpressionConstant2Vector::StaticClass(), -1400, -40));
-	if (UAxis) { UAxis->R = 1.0f; UAxis->G = 0.0f; }
-	UMaterialExpressionDotProduct* UDot = Cast<UMaterialExpressionDotProduct>(
-		CreateExpr(UMaterialExpressionDotProduct::StaticClass(), -1220, -40));
-	UMaterialExpressionMultiply* DopplerAmp = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -1040, -40));
-	if (DopplerAmp) DopplerAmp->ConstB = 0.90f;
-	UMaterialExpressionAdd* DopplerBias = Cast<UMaterialExpressionAdd>(
-		CreateExpr(UMaterialExpressionAdd::StaticClass(), -880, -40));
-	if (DopplerBias) DopplerBias->ConstB = 0.55f;
+		DiskHLSL->Inputs.Reset();
+		auto AddCustomIn = [DiskHLSL](const TCHAR* InName, UMaterialExpression* Src)
+		{
+			FCustomInput In;
+			In.InputName = FName(InName);
+			In.Input.Connect(0, Src);
+			DiskHLSL->Inputs.Add(In);
+		};
+		AddCustomIn(TEXT("InUV"), UVExpr);
+		AddCustomIn(TEXT("InTime"), TimeExpr);
+		AddCustomIn(TEXT("InInnerCol"), InnerCol);
+		AddCustomIn(TEXT("InMidCol"), MidCol);
+		AddCustomIn(TEXT("InOuterCol"), OuterCol);
+		AddCustomIn(TEXT("InOmega"), OmegaParam);
+		AddCustomIn(TEXT("InBoost"), BoostParam);
+		DiskHLSL->RebuildOutputs();
 
-	// Blackbody radial gradient + white-gold ISCO highlight
-	UMaterialExpressionLinearInterpolate* BandLerp = Cast<UMaterialExpressionLinearInterpolate>(
-		CreateExpr(UMaterialExpressionLinearInterpolate::StaticClass(), -360, -220));
-	UMaterialExpressionConstant3Vector* WhiteGoldCol = Cast<UMaterialExpressionConstant3Vector>(
-		CreateExpr(UMaterialExpressionConstant3Vector::StaticClass(), -480, -380));
-	if (WhiteGoldCol) WhiteGoldCol->Constant = FLinearColor(1.9f, 1.82f, 1.55f, 1.0f);
-	UMaterialExpressionMultiply* ISCOGlow = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -220, -100));
-	UMaterialExpressionAdd* CombinedColor = Cast<UMaterialExpressionAdd>(
-		CreateExpr(UMaterialExpressionAdd::StaticClass(), -60, -160));
-
-	UMaterialExpressionMultiply* MaskNoise = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -180, 120));
-	UMaterialExpressionMultiply* MaskWave = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), -40, 160));
-	UMaterialExpressionMultiply* MaskDoppler = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), 100, 160));
-	UMaterialExpressionMultiply* ColMask = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), 220, 20));
-	UMaterialExpressionMultiply* FinalEmiss = Cast<UMaterialExpressionMultiply>(
-		CreateExpr(UMaterialExpressionMultiply::StaticClass(), 380, 60));
-
-	if (DiskCol && OuterCol && BoostParam && UV && Center && RadialDist &&
-		BandSub && BandAbs && BandDiv && BandInv && BandClamp && RingMask &&
-		InnerSub && InnerAbs && InnerDiv && InnerInv && InnerClamp && InnerHot &&
-		WaveFreq && TimeExpr && TimeSpeed && WavePhase && WaveSine && WaveAbs && WaveAmp && WaveMask &&
-		WorldPos && SwirlDrift && DriftMult && DriftPos && PlasmaNoise &&
-		UAxis && UDot && DopplerAmp && DopplerBias &&
-		BandLerp && WhiteGoldCol && ISCOGlow && CombinedColor &&
-		MaskNoise && MaskWave && MaskDoppler && ColMask && FinalEmiss)
-	{
-		UMaterialEditingLibrary::ConnectMaterialExpressions(UV, TEXT(""), RadialDist, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(Center, TEXT(""), RadialDist, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(RadialDist, TEXT(""), BandSub, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(BandSub, TEXT(""), BandAbs, TEXT(""));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(BandAbs, TEXT(""), BandDiv, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(BandDiv, TEXT(""), BandInv, TEXT(""));
-		BandClamp->Input.Connect(0, BandInv);
-		UMaterialEditingLibrary::ConnectMaterialExpressions(BandClamp, TEXT(""), RingMask, TEXT("Base"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(RadialDist, TEXT(""), InnerSub, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(InnerSub, TEXT(""), InnerAbs, TEXT(""));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(InnerAbs, TEXT(""), InnerDiv, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(InnerDiv, TEXT(""), InnerInv, TEXT(""));
-		InnerClamp->Input.Connect(0, InnerInv);
-		UMaterialEditingLibrary::ConnectMaterialExpressions(InnerClamp, TEXT(""), InnerHot, TEXT("Base"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(RadialDist, TEXT(""), WaveFreq, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(TimeExpr, TEXT(""), TimeSpeed, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WaveFreq, TEXT(""), WavePhase, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(TimeSpeed, TEXT(""), WavePhase, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WavePhase, TEXT(""), WaveSine, TEXT(""));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WaveSine, TEXT(""), WaveAbs, TEXT(""));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WaveAbs, TEXT(""), WaveAmp, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WaveAmp, TEXT(""), WaveMask, TEXT("A"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(TimeExpr, TEXT(""), DriftMult, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(SwirlDrift, TEXT(""), DriftMult, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WorldPos, TEXT(""), DriftPos, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(DriftMult, TEXT(""), DriftPos, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(DriftPos, TEXT(""), PlasmaNoise, TEXT("Position"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(UV, TEXT(""), UDot, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(UAxis, TEXT(""), UDot, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(UDot, TEXT(""), DopplerAmp, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(DopplerAmp, TEXT(""), DopplerBias, TEXT("A"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(OuterCol, TEXT(""), BandLerp, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(DiskCol, TEXT(""), BandLerp, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(BandClamp, TEXT(""), BandLerp, TEXT("Alpha"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WhiteGoldCol, TEXT(""), ISCOGlow, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(InnerHot, TEXT(""), ISCOGlow, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(BandLerp, TEXT(""), CombinedColor, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(ISCOGlow, TEXT(""), CombinedColor, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(RingMask, TEXT(""), MaskNoise, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(PlasmaNoise, TEXT(""), MaskNoise, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(MaskNoise, TEXT(""), MaskWave, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(WaveMask, TEXT(""), MaskWave, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(MaskWave, TEXT(""), MaskDoppler, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(DopplerBias, TEXT(""), MaskDoppler, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(CombinedColor, TEXT(""), ColMask, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(MaskDoppler, TEXT(""), ColMask, TEXT("B"));
-
-		UMaterialEditingLibrary::ConnectMaterialExpressions(ColMask, TEXT(""), FinalEmiss, TEXT("A"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(BoostParam, TEXT(""), FinalEmiss, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialProperty(FinalEmiss, TEXT(""), MP_EmissiveColor);
+		UMaterialEditingLibrary::ConnectMaterialProperty(DiskHLSL, TEXT(""), MP_EmissiveColor);
 	}
 
 	UMaterialEditingLibrary::RecompileMaterial(Mat);
@@ -2642,11 +3076,14 @@ int32 UAetheriaShaderBakeCommandlet::Main(const FString& Params)
 	};
 
 	// 1. Import 2K Textures, Grimoire Illustrations, Volumetric UI Kit, Blender FBX Meshes & WAV Audio
-	BatchImportDir(TEXT("RawAssets/Textures"), TEXT("*.png"), TEXT("/Game/Textures"), false, true);
-	BatchImportDir(TEXT("RawAssets/Grimoire"), TEXT("*.png"), TEXT("/Game/Textures"), false, false);
-	BatchImportDir(TEXT("RawAssets/UI"), TEXT("*.png"), TEXT("/Game/Textures"), false, false);
-	BatchImportDir(TEXT("RawAssets/Meshes"), TEXT("*.fbx"), TEXT("/Game/Meshes"), true, false);
-	BatchImportDir(TEXT("RawAssets/Audio"), TEXT("*.wav"), TEXT("/Game/Audio"), false, false);
+	if (!Params.Contains(TEXT("ShadersOnly"), ESearchCase::IgnoreCase) && !FParse::Param(FCommandLine::Get(), TEXT("ShadersOnly")))
+	{
+		BatchImportDir(TEXT("RawAssets/Textures"), TEXT("*.png"), TEXT("/Game/Textures"), false, true);
+		BatchImportDir(TEXT("RawAssets/Grimoire"), TEXT("*.png"), TEXT("/Game/Textures"), false, false);
+		BatchImportDir(TEXT("RawAssets/UI"), TEXT("*.png"), TEXT("/Game/Textures"), false, false);
+		BatchImportDir(TEXT("RawAssets/Meshes"), TEXT("*.fbx"), TEXT("/Game/Meshes"), true, false);
+		BatchImportDir(TEXT("RawAssets/Audio"), TEXT("*.wav"), TEXT("/Game/Audio"), false, false);
+	}
 
 	struct FShaderSpec
 	{
@@ -2658,6 +3095,7 @@ int32 UAetheriaShaderBakeCommandlet::Main(const FString& Params)
 		{ TEXT("M_AetheriaMasterPBR"), &UAetheriaMaterialLibrary::BuildMasterCharacterPBRShaderGraph },
 		{ TEXT("M_AetheriaObsidian"), &UAetheriaMaterialLibrary::BuildObsidianShaderGraph },
 		{ TEXT("M_AetheriaEmissiveCore"), &UAetheriaMaterialLibrary::BuildEmissiveCoreShaderGraph },
+		{ TEXT("M_AetheriaMobRim"), &UAetheriaMaterialLibrary::BuildMobRimOverlayShaderGraph },
 		{ TEXT("M_AetheriaFireball"), &UAetheriaMaterialLibrary::BuildFireballShaderGraph },
 		{ TEXT("M_AetheriaBlackHole"), &UAetheriaMaterialLibrary::BuildBlackHoleHorizonShaderGraph },
 		{ TEXT("M_AetheriaAccretionDisk"), &UAetheriaMaterialLibrary::BuildAccretionDiskShaderGraph },
@@ -2766,11 +3204,17 @@ USkeletalMesh* UAetheriaMaterialLibrary::LoadSkeletalMeshFromFolder(const FStrin
 
 	auto TryLoad = [](const FString& Path) -> USkeletalMesh*
 	{
-		if (FPackageName::DoesPackageExist(Path))
+		static TSet<FString> FailedCookedSkelPaths;
+		const FString ObjectPath = Path + TEXT(".") + FPackageName::GetShortName(Path);
+		if (FailedCookedSkelPaths.Contains(ObjectPath))
 		{
-			const FString ObjectPath = Path + TEXT(".") + FPackageName::GetShortName(Path);
-			return LoadObject<USkeletalMesh>(nullptr, *ObjectPath);
+			return nullptr;
 		}
+		if (USkeletalMesh* Loaded = LoadObject<USkeletalMesh>(nullptr, *ObjectPath, nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			return Loaded;
+		}
+		FailedCookedSkelPaths.Add(ObjectPath);
 		return nullptr;
 	};
 

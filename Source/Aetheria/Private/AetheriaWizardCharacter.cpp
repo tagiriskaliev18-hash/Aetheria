@@ -23,6 +23,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Engine/World.h"
 #include "Engine/OverlapResult.h"
+#include "Engine/StaticMeshActor.h"
 #include "EngineUtils.h"
 #include "Engine/Engine.h"
 #include "Engine/CollisionProfile.h"
@@ -276,7 +277,7 @@ AAetheriaWizardCharacter::AAetheriaWizardCharacter()
 	ActiveOrbs.Add(EAetheriaOrb::Ignis);
 	ActiveOrbs.Add(EAetheriaOrb::Tempest);
 	ActiveOrbs.Add(EAetheriaOrb::Graviton);
-	SpellCooldowns.Init(0.0f, 12);
+	SpellCooldowns.Init(0.0f, 17);
 
 	SlotD = EAetheriaSpellId::Fireball;
 	SlotF = EAetheriaSpellId::Chronosphere;
@@ -314,9 +315,9 @@ void AAetheriaWizardCharacter::BeginPlay()
 
 	Super::BeginPlay();
 
-	if (SpellCooldowns.Num() < 12)
+	if (SpellCooldowns.Num() < 17)
 	{
-		SpellCooldowns.Init(0.0f, 12);
+		SpellCooldowns.Init(0.0f, 17);
 	}
 	PrevActorYaw = GetActorRotation().Yaw;
 	if (GetWorld() && GetWorld()->GetNetMode() != NM_Standalone)
@@ -1966,35 +1967,103 @@ void AAetheriaWizardCharacter::UpdateCameraOccluders(float DeltaSeconds)
 	}
 	OccluderScanTimer -= DeltaSeconds;
 	if (OccluderScanTimer > 0.0f) return;
-	OccluderScanTimer = 0.1f;
+	OccluderScanTimer = 0.05f;
 
 	const FVector CamLoc = TopDownCameraComponent->GetComponentLocation();
+	const FVector CamRight = TopDownCameraComponent->GetRightVector();
+	const FVector CamUp = TopDownCameraComponent->GetUpVector();
 	const FVector Feet = GetActorLocation();
 	const FVector Hero = Feet + FVector(0.0f, 0.0f, 40.0f);
+	const FVector HeroHigh = Feet + FVector(0.0f, 0.0f, 80.0f);
 	FCollisionQueryParams Q(SCENE_QUERY_STAT(AetheriaCamOcclusion), false, this);
-	TArray<FHitResult> Hits;
-	World->SweepMultiByChannel(Hits, CamLoc, Hero, FQuat::Identity, ECC_Visibility, FCollisionShape::MakeSphere(55.0f), Q);
 
 	TArray<TWeakObjectPtr<UPrimitiveComponent>> NowHit;
-	auto Consider = [&](const FHitResult& H)
+	auto Consider = [&](UPrimitiveComponent* C, const FVector* ImpactPointOpt)
 	{
-		UPrimitiveComponent* C = H.GetComponent();
-		if (!C || !C->IsA<UStaticMeshComponent>() || C->IsA<UInstancedStaticMeshComponent>()) return;
+		if (!C || !C->IsA<UStaticMeshComponent>()) return;
 		AActor* Owner = C->GetOwner();
-		if (!Owner || Owner == this || Cast<APawn>(Owner)) return;
-		// Floors and low props never block a 55 deg view of the hero.
-		if (C->Bounds.Origin.Z + C->Bounds.BoxExtent.Z < Feet.Z + 60.0f) return;
-		if (C->Bounds.BoxExtent.Z < 50.0f) return;
+		if (!Owner || Owner == this || Owner->IsA<APawn>()) return;
+
+		const FBoxSphereBounds& B = C->Bounds;
+		const float MaxZ = B.Origin.Z + B.BoxExtent.Z;
+		const float MinZ = B.Origin.Z - B.BoxExtent.Z;
+		// Omit walk floors and low props/curbs.
+		if (MaxZ <= Feet.Z + 65.0f || B.BoxExtent.Z < 45.0f) return;
+		// Skip arena-wide ISM floors; keep columns, arches, and wall ISMs.
+		if (C->IsA<UInstancedStaticMeshComponent>() && B.BoxExtent.X > 1800.0f && B.BoxExtent.Y > 1800.0f && MinZ < Feet.Z + 50.0f) return;
+		if (B.BoxExtent.X > 1800.0f && B.BoxExtent.Y > 1800.0f && MinZ < Feet.Z + 50.0f && ImpactPointOpt && ImpactPointOpt->Z <= Feet.Z + 55.0f) return;
+
 		NowHit.AddUnique(C);
 	};
-	for (const FHitResult& H : Hits) { Consider(H); }
-	TArray<FHitResult> Hits2;
-	World->SweepMultiByChannel(Hits2, CamLoc, Hero, FQuat::Identity, ECC_Camera, FCollisionShape::MakeSphere(55.0f), Q);
-	for (const FHitResult& H : Hits2) { Consider(H); }
+
+	const FCollisionShape SweepSphere = FCollisionShape::MakeSphere(115.0f);
+	const ECollisionChannel Channels[] = { ECC_Visibility, ECC_Camera, ECC_WorldStatic };
+	struct FSweepRay { FVector Start; FVector Target; };
+	const FSweepRay Rays[] = {
+		{ CamLoc, Hero },
+		{ CamLoc + CamRight * 120.0f, Hero },
+		{ CamLoc - CamRight * 120.0f, Hero },
+		{ CamLoc + CamUp * 80.0f, Hero },
+		{ CamLoc, HeroHigh }
+	};
+
+	for (const FSweepRay& Ray : Rays)
+	{
+		const FVector ToTarget = Ray.Target - Ray.Start;
+		const float Dist = ToTarget.Size();
+		const FVector SweepEnd = (Dist > 200.0f) ? (Ray.Target - (ToTarget / Dist) * 80.0f) : Ray.Target;
+		for (ECollisionChannel Chan : Channels)
+		{
+			TArray<FHitResult> Hits;
+			World->SweepMultiByChannel(Hits, Ray.Start, SweepEnd, FQuat::Identity, Chan, SweepSphere, Q);
+			for (const FHitResult& H : Hits)
+			{
+				Consider(H.GetComponent(), &H.ImpactPoint);
+			}
+		}
+	}
+
+	// Catch wide pillars/arches overlapping directly around the camera lens.
+	TArray<FOverlapResult> Overlaps;
+	World->OverlapMultiByObjectType(
+		Overlaps,
+		CamLoc,
+		FQuat::Identity,
+		FCollisionObjectQueryParams(FCollisionObjectQueryParams::AllStaticObjects),
+		FCollisionShape::MakeSphere(280.0f),
+		Q);
+	for (const FOverlapResult& O : Overlaps)
+	{
+		Consider(O.GetComponent(), nullptr);
+	}
+
+	// Fallback for decorative NoCollision overhead arches/columns in baked levels.
+	const FVector CenterDir = (Hero - CamLoc).GetSafeNormal();
+	const FVector CenterEnd = (FVector::Dist(CamLoc, Hero) > 200.0f) ? (Hero - CenterDir * 80.0f) : Hero;
+	const FVector CenterSeg = CenterEnd - CamLoc;
+	for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
+	{
+		UStaticMeshComponent* SM = It->GetStaticMeshComponent();
+		if (!SM || !SM->IsVisible() || SM->bHiddenInGame || SM->GetCollisionEnabled() != ECollisionEnabled::NoCollision) continue;
+		const FBoxSphereBounds& B = SM->Bounds;
+		if (B.BoxExtent.GetMax() >= 1200.0f) continue;
+		if (B.Origin.Z + B.BoxExtent.Z <= Feet.Z + 65.0f || B.BoxExtent.Z < 45.0f) continue;
+		if (FMath::LineBoxIntersection(B.GetBox().ExpandBy(115.0f), CamLoc, CenterEnd, CenterSeg))
+		{
+			NowHit.AddUnique(SM);
+		}
+	}
 
 	for (TWeakObjectPtr<UPrimitiveComponent>& C : NowHit)
 	{
-		if (C.IsValid()) { C->SetRenderInMainPass(false); }
+		if (C.IsValid())
+		{
+			if (!CameraOccluders.Contains(C))
+			{
+				UE_LOG(LogTemp, Display, TEXT("[CamOcc] Hiding %s (%s)"), *GetNameSafe(C->GetOwner()), *GetNameSafe(C.Get()));
+			}
+			C->SetRenderInMainPass(false);
+		}
 	}
 	for (TWeakObjectPtr<UPrimitiveComponent>& Old : CameraOccluders)
 	{
@@ -2538,8 +2607,14 @@ void AAetheriaWizardCharacter::ApplyDamageToWizard(float Amount)
 		if (HP <= 0.0f)
 		{
 			bIsAlive = false;
-	PlayPresentationAction(static_cast<uint8>(EAetheriaAnimAction::Death));
-			GetCharacterMovement()->DisableMovement();
+			PlayPresentationAction(static_cast<uint8>(EAetheriaAnimAction::Death));
+			if (UCharacterMovementComponent* Mov = GetCharacterMovement())
+			{
+				Mov->StopMovementImmediately();
+				Mov->DisableMovement();
+			}
+			bGlideDashing = false;
+			HitFlashTimer = 0.25f;
 		}
 	}
 }
@@ -2904,6 +2979,9 @@ void AAetheriaWizardCharacter::ReviveWizard(float HealthFraction)
 	WizardBurnTimer = 0.0f;
 	WizardBurnTickAccum = 0.0f;
 	bIsBurning = false;
+	ResetPresentationDeath();
+	DownedAnimAlpha = 0.0f;
+	bGlideDashing = false;
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
@@ -2929,6 +3007,17 @@ void AAetheriaWizardCharacter::PlayPresentationAction(uint8 Action)
 		if (UAetheriaAnimInstance* Anim = Cast<UAetheriaAnimInstance>(Skel->GetAnimInstance()))
 		{
 			Anim->PlayAction(static_cast<EAetheriaAnimAction>(Action));
+		}
+	}
+}
+
+void AAetheriaWizardCharacter::ResetPresentationDeath()
+{
+	if (USkeletalMeshComponent* Skel = GetMesh())
+	{
+		if (UAetheriaAnimInstance* Anim = Cast<UAetheriaAnimInstance>(Skel->GetAnimInstance()))
+		{
+			Anim->ReviveFromDeath();
 		}
 	}
 }

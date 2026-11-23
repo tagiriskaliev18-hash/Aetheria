@@ -9,9 +9,21 @@
 #include "AetheriaSlateHUD.generated.h"
 
 class AAetheriaPlayerController;
+class AAetheriaMobCharacter;
 class SEditableTextBox;
 struct FSlateDynamicImageBrush;
 struct FCompositeFont;
+
+struct FAetheriaFloatingDamage
+{
+	FVector WorldLocation = FVector::ZeroVector;
+	float Amount = 0.0f;
+	bool bIsCritOrSynergy = false;
+	FLinearColor Color = FLinearColor(0.98f, 0.92f, 0.58f, 1.0f);
+	float Age = 0.0f;
+	float Lifetime = 0.85f;
+	float LateralSeed = 0.0f;
+};
 
 class SAetheriaMinimapWidget : public SCompoundWidget
 {
@@ -181,6 +193,16 @@ class AETHERIA_API AAetheriaHUD : public AHUD
 public:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void DrawHUD() override;
+
+	static void SpawnFloatingDamageNumber(
+		UWorld* World,
+		const FVector& WorldLocation,
+		float DamageAmount,
+		bool bIsCritOrSynergy = false,
+		FLinearColor Color = FLinearColor(0.98f, 0.92f, 0.58f, 1.0f));
+
+	void AddFloatingDamage(const FVector& WorldLocation, float DamageAmount, bool bIsCritOrSynergy, FLinearColor Color);
 
 	void ShowLobby();
 	void ShowMainMenu();
@@ -195,4 +217,6 @@ public:
 
 private:
 	TSharedPtr<SAetheriaMainOverlay> MainOverlay;
+	TArray<FAetheriaFloatingDamage> FloatingDamages;
+	TMap<TWeakObjectPtr<AAetheriaMobCharacter>, float> TrailingMobHP;
 };

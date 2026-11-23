@@ -551,7 +551,13 @@ void AAetheriaPlayerController::UpdateGroundAimRay()
 void AAetheriaPlayerController::UpdateMovementInput(float DeltaTime)
 {
 	AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetPawn());
-	if (!Wiz || !Wiz->bIsAlive) return;
+	if (!Wiz || !Wiz->bIsAlive)
+	{
+		bClickMoveActive = false;
+		bRightMouseHeld = false;
+		ArmedSlotIndex = -1;
+		return;
+	}
 
 	if (AAetheriaHUD* Hud = Cast<AAetheriaHUD>(GetHUD()))
 	{
@@ -669,7 +675,7 @@ void AAetheriaPlayerController::OnLeftMouseDown()
 	}
 
 	AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetPawn());
-	if (!Wiz) return;
+	if (!Wiz || !Wiz->bIsAlive) return;
 
 	Wiz->FaceWorldPoint(CachedGroundAim);
 	if (ArmedSlotIndex >= 0 && PreferredCastMode == EAetheriaCastMode::InvokeThenAim)
@@ -689,6 +695,9 @@ void AAetheriaPlayerController::OnRightMouseDown()
 	{
 		if (Hud->IsAnyModalOpen()) return;
 	}
+
+	AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetPawn());
+	if (!Wiz || !Wiz->bIsAlive) return;
 
 	if (ArmedSlotIndex >= 0)
 	{
@@ -749,7 +758,7 @@ void AAetheriaPlayerController::OnKeyEnterPortal()
 void AAetheriaPlayerController::UI_PushOrb(EAetheriaOrb Orb)
 {
 	AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetPawn());
-	if (!Wiz) return;
+	if (!Wiz || !Wiz->bIsAlive) return;
 
 	Wiz->ServerPushOrb(Orb);
 
@@ -776,7 +785,7 @@ void AAetheriaPlayerController::UI_PushOrb(EAetheriaOrb Orb)
 void AAetheriaPlayerController::UI_InvokeOrCast()
 {
 	AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetPawn());
-	if (!Wiz) return;
+	if (!Wiz || !Wiz->bIsAlive) return;
 
 	if (PreferredCastMode == EAetheriaCastMode::InstantOnCombo)
 	{
@@ -793,7 +802,7 @@ void AAetheriaPlayerController::UI_InvokeOrCast()
 void AAetheriaPlayerController::UI_SelectOrCastSlot(int32 SlotIndex)
 {
 	AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetPawn());
-	if (!Wiz) return;
+	if (!Wiz || !Wiz->bIsAlive) return;
 
 	auto TryCastOrBuffer = [this, Wiz, SlotIndex]()
 	{
@@ -828,11 +837,11 @@ void AAetheriaPlayerController::UI_SelectOrCastSlot(int32 SlotIndex)
 
 void AAetheriaPlayerController::UI_Dash()
 {
-	if (AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetPawn()))
-	{
-		Wiz->FaceWorldPoint(CachedGroundAim);
-		Wiz->ServerDash(CachedGroundAim);
-	}
+	AAetheriaWizardCharacter* Wiz = Cast<AAetheriaWizardCharacter>(GetPawn());
+	if (!Wiz || !Wiz->bIsAlive) return;
+
+	Wiz->FaceWorldPoint(CachedGroundAim);
+	Wiz->ServerDash(CachedGroundAim);
 }
 
 void AAetheriaPlayerController::UI_SetCastMode(EAetheriaCastMode NewMode)
@@ -876,23 +885,27 @@ void AAetheriaPlayerController::UI_ApplyGraphicsPreset(int32 PresetIdx)
 	switch (GraphicsPresetIndex)
 	{
 	case 0: // Optimal3070
-		ConsoleCommand(TEXT("r.ScreenPercentage 85"));
+		ConsoleCommand(TEXT("r.ScreenPercentage 100"));
+		ConsoleCommand(TEXT("r.Streaming.PoolSize 3072"));
+		ConsoleCommand(TEXT("r.MipMapLODBias -0.5"));
 		ConsoleCommand(TEXT("r.Lumen.DiffuseIndirect.Allow 1"));
 		ConsoleCommand(TEXT("r.Shadow.Virtual.Enable 1"));
 		ConsoleCommand(TEXT("r.MaxAnisotropy 16"));
 		ConsoleCommand(TEXT("r.VT.MaxAnisotropy 16"));
 		ConsoleCommand(TEXT("r.ContactShadows 1"));
-		ConsoleCommand(TEXT("r.Tonemapper.Sharpen 0.65"));
+		ConsoleCommand(TEXT("r.Tonemapper.Sharpen 0.75"));
 		ConsoleCommand(TEXT("t.MaxFPS 120"));
 		break;
 	case 1: // UltraCinema
 		ConsoleCommand(TEXT("r.ScreenPercentage 100"));
+		ConsoleCommand(TEXT("r.Streaming.PoolSize 3072"));
+		ConsoleCommand(TEXT("r.MipMapLODBias -0.5"));
 		ConsoleCommand(TEXT("r.Lumen.DiffuseIndirect.Allow 1"));
 		ConsoleCommand(TEXT("r.Shadow.Virtual.Enable 1"));
 		ConsoleCommand(TEXT("r.MaxAnisotropy 16"));
 		ConsoleCommand(TEXT("r.VT.MaxAnisotropy 16"));
 		ConsoleCommand(TEXT("r.ContactShadows 1"));
-		ConsoleCommand(TEXT("r.Tonemapper.Sharpen 0.65"));
+		ConsoleCommand(TEXT("r.Tonemapper.Sharpen 0.75"));
 		ConsoleCommand(TEXT("t.MaxFPS 120"));
 		break;
 	case 2: // Esports144

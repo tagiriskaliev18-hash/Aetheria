@@ -12,6 +12,8 @@ class AAetheriaBotAIController;
 class AAetheriaWizardCharacter;
 class AAetheriaGameState;
 class AAetheriaSanctumGate;
+class UAudioComponent;
+class USoundBase;
 
 struct FAetheriaRarityEntry
 {
@@ -82,6 +84,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Aetheria|World")
 	void OpenActiveGate();
+
+	UFUNCTION(BlueprintCallable, Category = "Aetheria|Audio")
+	void PlayBiomeBGM(EAetheriaWorldId WorldId, bool bBossEncounter = false);
 
 	UFUNCTION(BlueprintPure, Category = "Aetheria|World")
 	bool IsInMainMenu() const { return bInMainMenu; }
@@ -155,6 +160,21 @@ protected:
 	bool bInMainMenu = true;
 	bool bCombatReleased = false;
 	TWeakObjectPtr<AAetheriaSanctumGate> ActiveGate;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> BiomeBGMComp = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<USoundBase> ActiveBGMTrack = nullptr;
+
+	bool bStageEntryAmbushSpawned = false;
+	bool bGateOpenVFXTriggered = false;
+	bool bVictoryPortalVFXTriggered = false;
+
+	void PlayAnnouncerVoice(const TCHAR* SoundWavePkg, float Volume = 0.85f);
+	void SpawnStageWorldVFX(const TCHAR* NiagaraPkg, const FVector& Loc, const FRotator& Rot, const FVector& Scale, bool bPersistentStageTag = true);
+	void ClearStageWorldVFX();
+	FVector ResolveGroundedStagePoint(const FVector& DesiredXY, float DefaultZ = 0.0f) const;
 
 public:
 	/** Trace down (and search nearby) for walkable, pawn-blocking ground and

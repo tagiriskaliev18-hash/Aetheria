@@ -1,5 +1,9 @@
 #include "AetheriaGameMode.h"
+#include "UI/SAetheriaLoadingScreen.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Components/AudioComponent.h"
+#include "Sound/SoundBase.h"
+#include "Sound/SoundWave.h"
 #include "AetheriaWorldDirector.h"
 #include "AetheriaSanctumGate.h"
 #include "AetheriaPackVFX.h"
@@ -7,6 +11,7 @@
 #include "AetheriaPlayerState.h"
 #include "AetheriaPlayerController.h"
 #include "AetheriaWizardCharacter.h"
+#include "AetheriaAnimInstance.h"
 #include "AetheriaMobCharacter.h"
 #include "AetheriaBotAIController.h"
 #include "AetheriaSlateHUD.h"
@@ -363,6 +368,7 @@ namespace
 void AAetheriaGameMode::BeginPlay()
 {
 	Super::BeginPlay();
+	FAetheriaLoadingScreenController::EnsureInitialized();
 	if (GEngine) { GEngine->bEnableOnScreenDebugMessages = false; }
 	extern ENGINE_API bool GAreScreenMessagesEnabled;
 	GAreScreenMessagesEnabled = false;
@@ -517,10 +523,13 @@ void AAetheriaGameMode::BeginPlay()
 			bool bInvoke = false;
 			bool bCast = false;
 			bool bWaves = false;
+			bool bReviveReset = false;
+			int32 StaticBuildingsMoved = 0;
+			TMap<TWeakObjectPtr<AStaticMeshActor>, FVector> StaticSnapshot;
 			float ManaBeforeCast = -1.0f;
 		};
 		TSharedRef<FCombatTestState> CT = MakeShared<FCombatTestState>();
-		FTimerHandle HC1, HC2, HC3, HC4, HC5, HC6, HC7;
+		FTimerHandle HC1, HCGargantua, HCGargantuaCheck, HC2, HC3, HC4, HC6, HC7;
 		World->GetTimerManager().SetTimer(HC1, [WeakGM, FindHero, CT]()
 		{
 			AAetheriaWizardCharacter* H = FindHero();
@@ -541,9 +550,146 @@ void AAetheriaGameMode::BeginPlay()
 			UE_LOG(LogTemp, Display, TEXT("[CombatTest] cast slotD ok=%d mana %.1f->%.1f cd=%.1f"),
 				(int32)CT->bCast, CT->ManaBeforeCast, H->Mana, H->SlotDCooldownRemaining);
 			H->ServerBasicAttack(Aim);
+
+			// Test death -> revive reset BEFORE ServerDash i-frames are active
+			H->ApplyDamageToWizard(9999.0f);
+			const bool bWasDowned = !H->bIsAlive;
+			H->ReviveWizard(1.0f);
+			const UAetheriaAnimInstance* Anim = H->GetMesh() ? Cast<UAetheriaAnimInstance>(H->GetMesh()->GetAnimInstance()) : nullptr;
+			const UCharacterMovementComponent* Mov = H->GetCharacterMovement();
+			CT->bReviveReset = bWasDowned && H->bIsAlive && (!Anim || !Anim->bIsDead) && (!Mov || Mov->MovementMode == MOVE_Walking);
+			UE_LOG(LogTemp, Display, TEXT("[CombatTest] revive_anim_reset=%d alive=%d animDead=%d movMode=%d"),
+				CT->bReviveReset ? 1 : 0, H->bIsAlive ? 1 : 0, (Anim && Anim->bIsDead) ? 1 : 0, Mov ? (int32)Mov->MovementMode : -1);
+
 			H->ServerDash(Aim + FVector(200.f, 0.f, 0.f));
+
 			if (AAetheriaGameMode* GM = WeakGM.Get()) { GM->OpenActiveGate(); }
 		}, 2.5f, false);
+		World->GetTimerManager().SetTimer(HCGargantua, [World, FindHero, CT]()
+		{
+			AAetheriaWizardCharacter* H = FindHero();
+			if (!H || !World) return;
+
+			CT->StaticSnapshot.Reset();
+			for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
+			{
+				if (AStaticMeshActor* SMA = *It)
+				{
+					if (!SMA->IsActorBeingDestroyed())
+					{
+						CT->StaticSnapshot.Add(SMA, SMA->GetActorLocation());
+					}
+				}
+			}
+
+			FVector Aim = H->GetActorLocation() + H->GetActorForwardVector() * 480.0f;
+			float BestDistSq = MAX_FLT;
+			for (TActorIterator<AAetheriaMobCharacter> It(World); It; ++It)
+			{
+				AAetheriaMobCharacter* M = *It;
+				if (!M || M->IsActorBeingDestroyed() || M->HP <= 0.0f) continue;
+				const float DSq = FVector::DistSquared(H->GetActorLocation(), M->GetActorLocation());
+				if (DSq < BestDistSq)
+				{
+					BestDistSq = DSq;
+					Aim = M->GetActorLocation();
+				}
+			}
+
+			// Cast BlackHole (EEE)
+			H->Mana = H->MaxMana;
+			H->SpellCooldowns.Init(0.0f, 17);
+			H->ServerPushOrb(EAetheriaOrb::Graviton);
+			H->ServerPushOrb(EAetheriaOrb::Graviton);
+			H->ServerPushOrb(EAetheriaOrb::Graviton);
+			H->ServerInvoke(false, Aim);
+			H->ServerCastSlot(0, Aim);
+
+			// Cast ChaosMeteor (QQE)
+			H->Mana = H->MaxMana;
+			H->SpellCooldowns.Init(0.0f, 17);
+			const FVector MeteorAim = Aim + FVector(220.0f, 0.0f, 0.0f);
+			H->ServerPushOrb(EAetheriaOrb::Ignis);
+			H->ServerPushOrb(EAetheriaOrb::Ignis);
+			H->ServerPushOrb(EAetheriaOrb::Graviton);
+			H->ServerInvoke(false, MeteorAim);
+			H->ServerCastSlot(0, MeteorAim);
+
+			UE_LOG(LogTemp, Display, TEXT("[CombatTest] cast BlackHole(EEE) + ChaosMeteor(QQE) snapshotStatic=%d aim=%s"),
+				CT->StaticSnapshot.Num(), *Aim.ToCompactString());
+		}, 14.5f, false);
+		World->GetTimerManager().SetTimer(HCGargantuaCheck, [CT]()
+		{
+			int32 Moved = 0;
+			for (const TPair<TWeakObjectPtr<AStaticMeshActor>, FVector>& KV : CT->StaticSnapshot)
+			{
+				if (AStaticMeshActor* SMA = KV.Key.Get())
+				{
+					if (!SMA->IsActorBeingDestroyed() && FVector::DistSquared(KV.Value, SMA->GetActorLocation()) > 4.0f)
+					{
+						++Moved;
+					}
+				}
+			}
+			CT->StaticBuildingsMoved = Moved;
+			UE_LOG(LogTemp, Display, TEXT("[CombatTest] static_buildings_moved=%d"), Moved);
+
+			const FString ShotDir = FPaths::ProjectSavedDir() / TEXT("GrokShots");
+			IFileManager::Get().MakeDirectory(*ShotDir, true);
+			const FString ShotPath = ShotDir / FString::Printf(TEXT("gargantua_meteor_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+			FScreenshotRequest::RequestScreenshot(ShotPath, true, false);
+			UE_LOG(LogTemp, Display, TEXT("[Aetheria] Gargantua/Meteor shot %s"), *ShotPath);
+		}, 16.3f, false);
+		World->GetTimerManager().SetTimer(HC2, [WeakGM, World, FindHero]()
+		{
+			AAetheriaWizardCharacter* H = FindHero();
+			if (!H || !World) return;
+
+			AAetheriaMobCharacter* NearestMob = nullptr;
+			float BestDistSq = MAX_FLT;
+			for (TActorIterator<AAetheriaMobCharacter> It(World); It; ++It)
+			{
+				AAetheriaMobCharacter* M = *It;
+				if (!M || M->IsActorBeingDestroyed() || M->HP <= 0.0f) continue;
+				const float DSq = FVector::DistSquared(H->GetActorLocation(), M->GetActorLocation());
+				if (DSq < BestDistSq)
+				{
+					BestDistSq = DSq;
+					NearestMob = M;
+				}
+			}
+
+			FVector Aim = H->GetActorLocation() + H->GetActorForwardVector() * 650.0f;
+			if (NearestMob)
+			{
+				const FVector MobLoc = NearestMob->GetActorLocation();
+				if (FVector::Dist2D(H->GetActorLocation(), MobLoc) > 420.0f)
+				{
+					if (AAetheriaGameMode* GM = WeakGM.Get())
+					{
+						GM->PlaceCharacterOnGround(H, MobLoc + FVector(-340.0f, -120.0f, 0.0f), TEXT("CombatTestApproach"));
+					}
+				}
+				Aim = MobLoc;
+			}
+
+			H->Mana = H->MaxMana;
+			H->SpellCooldowns.Init(0.0f, 17);
+			// Fireball (QQQ)
+			H->ServerPushOrb(EAetheriaOrb::Ignis);
+			H->ServerPushOrb(EAetheriaOrb::Ignis);
+			H->ServerPushOrb(EAetheriaOrb::Ignis);
+			H->ServerInvoke(false, Aim);
+			H->ServerCastSlot(0, Aim);
+
+			// ChainLightning (QWW)
+			H->Mana = H->MaxMana;
+			H->ServerPushOrb(EAetheriaOrb::Ignis);
+			H->ServerPushOrb(EAetheriaOrb::Tempest);
+			H->ServerPushOrb(EAetheriaOrb::Tempest);
+			H->ServerInvoke(false, Aim);
+			H->ServerCastSlot(0, Aim);
+		}, 17.45f, false);
 		World->GetTimerManager().SetTimer(HC7, [World, CT]()
 		{
 			int32 Mobs = 0;
@@ -554,11 +700,43 @@ void AAetheriaGameMode::BeginPlay()
 			}
 			CT->bWaves = Mobs > 0;
 			UE_LOG(LogTemp, Display, TEXT("[CombatTest] mobs alive=%d ok=%d"), Mobs, (int32)CT->bWaves);
-			const bool bPass = CT->bOrbs && CT->bInvoke && CT->bCast && CT->bWaves;
-			UE_LOG(LogTemp, Display, TEXT("[CombatTest] VERDICT %s orbs=%d invoke=%d cast=%d waves=%d"),
-				bPass ? TEXT("PASS") : TEXT("FAIL"), (int32)CT->bOrbs, (int32)CT->bInvoke, (int32)CT->bCast, (int32)CT->bWaves);
+			const bool bPass = CT->bOrbs && CT->bInvoke && CT->bCast && CT->bWaves && CT->bReviveReset && (CT->StaticBuildingsMoved == 0);
+			UE_LOG(LogTemp, Display, TEXT("[CombatTest] VERDICT %s orbs=%d invoke=%d cast=%d waves=%d revive=%d static_buildings_moved=%d"),
+				bPass ? TEXT("PASS") : TEXT("FAIL"), (int32)CT->bOrbs, (int32)CT->bInvoke, (int32)CT->bCast, (int32)CT->bWaves, (int32)CT->bReviveReset, CT->StaticBuildingsMoved);
+			const FString CombatShotDir = FPaths::ProjectSavedDir() / TEXT("GrokShots");
+			IFileManager::Get().MakeDirectory(*CombatShotDir, true);
+			const FString CombatShotPath = CombatShotDir / FString::Printf(TEXT("combat_mobs_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+			FScreenshotRequest::RequestScreenshot(CombatShotPath, true, false);
+			UE_LOG(LogTemp, Display, TEXT("[Aetheria] Combat shot %s"), *CombatShotPath);
 		}, 18.0f, false);
-		World->GetTimerManager().SetTimer(HC6, []() { FGenericPlatformMisc::RequestExit(false); }, 21.0f, false);
+		World->GetTimerManager().SetTimer(HC3, [WeakGM, World]()
+		{
+			APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+			if (!PC) return;
+			const EAetheriaWorldId WId = WeakGM.IsValid() ? WeakGM->GetActiveWorld() : EAetheriaWorldId::Bastion;
+			const FVector Base = AetheriaWorldDirector::PlayerStartForWorld(World, WId);
+			const FVector FloorCamPos = Base + FVector(-480.0f, -480.0f, 760.0f);
+			const FVector FloorLook = Base + FVector(320.0f, 180.0f, -60.0f);
+			FActorSpawnParameters Sp;
+			Sp.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			if (ACameraActor* FloorCam = World->SpawnActor<ACameraActor>(FloorCamPos, (FloorLook - FloorCamPos).Rotation(), Sp))
+			{
+				if (UCameraComponent* CC = FloorCam->GetCameraComponent())
+				{
+					CC->SetFieldOfView(54.0f);
+				}
+				PC->SetViewTarget(FloorCam);
+			}
+		}, 19.2f, false);
+		World->GetTimerManager().SetTimer(HC4, []()
+		{
+			const FString FloorShotDir = FPaths::ProjectSavedDir() / TEXT("GrokShots");
+			IFileManager::Get().MakeDirectory(*FloorShotDir, true);
+			const FString FloorShotPath = FloorShotDir / FString::Printf(TEXT("bastion_floor_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+			FScreenshotRequest::RequestScreenshot(FloorShotPath, true, false);
+			UE_LOG(LogTemp, Display, TEXT("[Aetheria] Bastion floor shot %s"), *FloorShotPath);
+		}, 19.8f, false);
+		World->GetTimerManager().SetTimer(HC6, []() { FGenericPlatformMisc::RequestExit(false); }, 22.0f, false);
 	}
 
 	if (FParse::Param(FCommandLine::Get(), TEXT("GrokStaffShot")))
@@ -1063,6 +1241,7 @@ void AAetheriaGameMode::WarpToLocation(int32 NewLocationIndex, int32 OptionalAct
 		Wiz->HP = Wiz->MaxHP;
 		Wiz->Mana = Wiz->MaxMana;
 		Wiz->bIsAlive = true;
+		Wiz->ResetPresentationDeath();
 		Wiz->ColdStacks = 0;
 		Wiz->RespawnTimer = 0.0f;
 		if (UCharacterMovementComponent* MoveComp = Wiz->GetCharacterMovement())
@@ -1092,22 +1271,36 @@ void AAetheriaGameMode::EnterAstralPortal()
 	AAetheriaGameState* GS = GetGameState<AAetheriaGameState>();
 	if (!GS || !GS->bPortalOpen) return;
 
-	if (GS->CurrentLocationIndex >= 9)
+	// Progress seamlessly across all 4 baked worlds with our persistent dark-fantasy loading screen
+	switch (ActiveWorld)
 	{
+	case EAetheriaWorldId::Bastion:
+		StartWorld(EAetheriaWorldId::RuinsTemple, false);
+		return;
+	case EAetheriaWorldId::RuinsTemple:
+		StartWorld(EAetheriaWorldId::VoidRealm, false);
+		return;
+	case EAetheriaWorldId::VoidRealm:
+		StartWorld(EAetheriaWorldId::BossSanctum, false);
+		return;
+	case EAetheriaWorldId::BossSanctum:
+	default:
 		GS->bCampaignComplete = true;
 		GS->ActTitle = TEXT("Хроно-Печать Восстановлена!");
-		GS->ActDescription = TEXT("Все 10 локаций пройдены! Можете выбрать любой мир через Атлас [M].");
+		GS->ActDescription = TEXT("Все 4 мира пройдены! Выберите любой мир через Атлас [M].");
 		GS->bPortalOpen = false;
+		PlayAnnouncerVoice(TEXT("/Game/ParagonMaleAnnouncer/Sounds/SoundWaves/MAnnouncer_Player_QuestComplete_010"), 0.90f);
 		return;
 	}
-
-	WarpToLocation(GS->CurrentLocationIndex + 1, 1);
 }
 
 void AAetheriaGameMode::SetAct(int32 ActIndex)
 {
 	AAetheriaGameState* GS = GetGameState<AAetheriaGameState>();
+	UWorld* World = GetWorld();
 	if (!GS) return;
+
+	ClearStageWorldVFX();
 
 	CurrentAct = FMath::Clamp(ActIndex, 1, 5);
 	GS->CurrentAct = CurrentAct;
@@ -1120,7 +1313,18 @@ void AAetheriaGameMode::SetAct(int32 ActIndex)
 	const FAetheriaLocationDef LocDef = UAetheriaBiomeDatabase::GetLocation(GS->CurrentLocationIndex);
 	const int32 TotalMages = FMath::Max(1, GS->ActivePlayerCount + GS->ActiveBotCount);
 	const FAetheriaActTimingConfig Timing = UAetheriaBiomeDatabase::GetActTiming(GS->PacingMode, TotalMages);
-	LegionKillsTarget = Timing.LegionKillsTarget;
+	LegionKillsTarget = (GS->PacingMode == EAetheriaPacingMode::DemoBlitz) ? FMath::Clamp(10 + TotalMages * 2, 10, 18) : Timing.LegionKillsTarget;
+
+	// Anchor every stage dynamically along the active world's playable route: PlayerStart -> Gate -> BossArena
+	const FVector StartOrigin = AetheriaWorldDirector::PlayerStartForWorld(World, ActiveWorld);
+	const FVector GatePos = AetheriaWorldDirector::GateLocationForWorld(ActiveWorld);
+	FVector RouteDir = (GatePos - StartOrigin);
+	RouteDir.Z = 0.0f;
+	if (!RouteDir.Normalize())
+	{
+		RouteDir = FVector(0.7071f, -0.7071f, 0.0f);
+	}
+	const FVector RouteRight(-RouteDir.Y, RouteDir.X, 0.0f);
 
 	if (CurrentAct == 1)
 	{
@@ -1128,10 +1332,13 @@ void AAetheriaGameMode::SetAct(int32 ActIndex)
 		GS->CurrentWavePhase = EAetheriaWavePhase::SanctuaryGrace;
 		GS->CurrentWaveNumber = 0;
 		bConstructAwakeningTriggered = false;
+		bStageEntryAmbushSpawned = false;
+		bGateOpenVFXTriggered = false;
+		bVictoryPortalVFXTriggered = false;
 		CounteredObjectiveIds.Empty();
 		if (GS->CurrentLocationIndex == 0)
 		{
-			GS->SetSynergyBanner(TEXT("Святилище: ПКМ — движение, [Q/W/E] -> [R] — синтез заклинания"));
+			GS->SetSynergyBanner(TEXT("Этап I — Засада у Врат: ПКМ — движение, [Q/W/E] -> [R] — синтез заклинания"));
 		}
 	}
 	else if (CurrentAct == 5)
@@ -1144,84 +1351,135 @@ void AAetheriaGameMode::SetAct(int32 ActIndex)
 	{
 	case 1:
 	{
-		GS->ActTitle = TEXT("Акт I — Захват Рунных Маяков");
-		GS->ActDescription = TEXT("Встаньте в сияющие круги 3 маяков и отбейте натиск легионов Бездны.");
-		for (int32 i = 0; i < 3; ++i)
+		// Stage 1: Entry Ambush & Forward Runic Beacons
+		GS->ActTitle = TEXT("Этап I — Засада у Врат");
+		GS->ActDescription = TEXT("Прорвите авангардную засаду и активируйте 2 Рунных Маяка на подступах.");
+		const FVector BeaconOffsets[2] = {
+			StartOrigin + RouteDir * 480.0f + RouteRight * 220.0f,
+			StartOrigin + RouteDir * 820.0f - RouteRight * 220.0f
+		};
+		for (int32 i = 0; i < 2; ++i)
 		{
-			const float Angle = (2.0f * PI * i) / 3.0f;
-			const float X = FMath::Cos(Angle) * 2600.0f;
-			const float Y = FMath::Sin(Angle) * 2600.0f;
-			const float Z = UAetheriaBiomeDatabase::GroundZAt(this, GS->CurrentLocationIndex, FVector2D(X, Y));
+			const FVector Loc = ResolveGroundedStagePoint(BeaconOffsets[i], StartOrigin.Z);
 			FAetheriaObjectiveInfo Obj;
 			Obj.ObjectiveId = i + 1;
 			Obj.Kind = EAetheriaObjectiveKind::Beacon;
-			Obj.Label = FString::Printf(TEXT("Маяк %d"), i + 1);
-			Obj.Location = FVector(X, Y, Z);
-			Obj.RadiusUU = 600.0f;
+			Obj.Label = FString::Printf(TEXT("Рунный Маяк %d"), i + 1);
+			Obj.Location = Loc;
+			Obj.RadiusUU = 560.0f;
 			Obj.Progress = 0.0f;
 			Obj.bCompleted = false;
 			Obj.bActive = true;
 			GS->Objectives.Add(Obj);
+			SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Circle"), Loc + FVector(0.0f, 0.0f, 8.0f), FRotator::ZeroRotator, FVector(2.2f));
 		}
 		break;
 	}
 	case 2:
 	{
-		GS->ActTitle = TEXT("Акт II — Осада Эфирного Обелиска");
-		GS->ActDescription = TEXT("Удерживайте центральный Обелиск (0% -> 100%) под натиском волн.");
+		// Stage 2: Obelisk Seal Encounter with glowing runic ring
+		GS->ActTitle = TEXT("Этап II — Печать Эфирного Обелиска");
+		GS->ActDescription = TEXT("Удерживайте сияющее руническое кольцо Обелиска (0% -> 100%) под натиском стражей.");
 		GS->CurrentWavePhase = EAetheriaWavePhase::ClimaxSiege;
+		const FVector ObeliskLoc = ResolveGroundedStagePoint(FMath::Lerp(StartOrigin, GatePos, 0.58f), StartOrigin.Z);
 		FAetheriaObjectiveInfo Obj;
 		Obj.ObjectiveId = 10;
 		Obj.Kind = EAetheriaObjectiveKind::Obelisk;
-		Obj.Label = TEXT("Эфирный Обелиск");
-		const float Z = UAetheriaBiomeDatabase::GroundZAt(this, GS->CurrentLocationIndex, FVector2D::ZeroVector);
-		Obj.Location = FVector(0.0f, 0.0f, Z);
-		Obj.RadiusUU = 750.0f;
+		Obj.Label = TEXT("Печать Обелиска");
+		Obj.Location = ObeliskLoc;
+		Obj.RadiusUU = 680.0f;
 		Obj.Progress = 0.0f;
 		Obj.bCompleted = false;
 		Obj.bActive = true;
 		GS->Objectives.Add(Obj);
+
+		SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Circle"), ObeliskLoc + FVector(0.0f, 0.0f, 10.0f), FRotator::ZeroRotator, FVector(3.4f));
+		SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Aura_Mana"), ObeliskLoc + FVector(0.0f, 0.0f, 35.0f), FRotator::ZeroRotator, FVector(2.6f));
+		GS->SetSynergyBanner(TEXT("ПЕЧАТЬ ОБЕЛИСКА ПРОБУЖДЕНА! Встаньте в рунный круг!"));
+		PlayAnnouncerVoice(TEXT("/Game/ParagonMaleAnnouncer/Sounds/SoundWaves/MAnnouncer_Enemy_TowerUnderAttack_010"), 0.80f);
 		break;
 	}
 	case 3:
 	{
-		GS->ActTitle = TEXT("Акт III — Разрушение Пилонов Хранителя");
-		GS->ActDescription = TEXT("Уничтожьте 4 экранированных Пилона заклинаниями по краям арены.");
+		// Stage 3: Gate Opens with /Game/Portals VFX & ParagonMaleAnnouncer callout + Shielded Seal Pylons
+		GS->ActTitle = TEXT("Этап III — Врата Святилища Открыты");
+		GS->ActDescription = TEXT("Врата разломаны! Уничтожьте 2 Пилона Печати заклинаниями на проходе.");
 		GS->CurrentWavePhase = EAetheriaWavePhase::TacticalEscalation;
-		const float PylonHP = 900.0f * Timing.PylonHPScale;
-		for (int32 i = 0; i < 4; ++i)
+
+		OpenActiveGate();
+		const FVector GroundGate = ResolveGroundedStagePoint(GatePos, StartOrigin.Z);
+		if (!bGateOpenVFXTriggered)
 		{
-			const float Angle = PI * 0.25f + (PI * 0.5f * i);
-			const float X = FMath::Cos(Angle) * 2800.0f;
-			const float Y = FMath::Sin(Angle) * 2800.0f;
-			const float Z = UAetheriaBiomeDatabase::GroundZAt(this, GS->CurrentLocationIndex, FVector2D(X, Y));
+			bGateOpenVFXTriggered = true;
+			const TCHAR* GatePortalVFX = (ActiveWorld == EAetheriaWorldId::BossSanctum)
+				? TEXT("/Game/Portals/Rectangle/FirePortal/NS_FireRec")
+				: TEXT("/Game/Portals/Rounded/LightningPortal/NS_Lightning");
+			SpawnStageWorldVFX(GatePortalVFX, GroundGate + FVector(0.0f, 0.0f, 130.0f), FRotator(0.0f, 45.0f, 0.0f), FVector(2.0f));
+			SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Shockwave"), GroundGate + FVector(0.0f, 0.0f, 20.0f), FRotator::ZeroRotator, FVector(2.8f), false);
+			UAetheriaMaterialLibrary::PlayGameSound2D(World, TEXT("SFX_Boss_Gate_Open"), 0.90f);
+			PlayAnnouncerVoice(TEXT("/Game/ParagonMaleAnnouncer/Sounds/SoundWaves/MAnnouncer_Player_QuestUnlocked_010"), 0.90f);
+			GS->SetSynergyBanner(TEXT("ВРАТА СВЯТИЛИЩА ОТКРЫТЫ! Сокрушите Пилоны Печати!"));
+		}
+
+		const float PylonHP = 720.0f * Timing.PylonHPScale;
+		const FVector PylonOffsets[2] = {
+			GroundGate + RouteDir * 360.0f + RouteRight * 340.0f,
+			GroundGate + RouteDir * 360.0f - RouteRight * 340.0f
+		};
+		for (int32 i = 0; i < 2; ++i)
+		{
+			const FVector Loc = ResolveGroundedStagePoint(PylonOffsets[i], GroundGate.Z);
 			FAetheriaObjectiveInfo Obj;
 			Obj.ObjectiveId = 20 + i;
 			Obj.Kind = EAetheriaObjectiveKind::Pylon;
-			Obj.Label = FString::Printf(TEXT("Пилон %d"), i + 1);
-			Obj.Location = FVector(X, Y, Z);
-			Obj.RadiusUU = 450.0f;
+			Obj.Label = FString::Printf(TEXT("Пилон Печати %d"), i + 1);
+			Obj.Location = Loc;
+			Obj.RadiusUU = 420.0f;
 			Obj.HP = PylonHP;
 			Obj.MaxHP = PylonHP;
 			Obj.Progress = 0.0f;
 			Obj.bCompleted = false;
 			Obj.bActive = true;
 			GS->Objectives.Add(Obj);
+			SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Aura_Fire"), Loc + FVector(0.0f, 0.0f, 20.0f), FRotator::ZeroRotator, FVector(2.0f));
 		}
 		break;
 	}
 	case 4:
 	{
-		GS->ActTitle = TEXT("Акт IV — Натиск Элитного Легиона");
-		GS->ActDescription = FString::Printf(TEXT("Уничтожьте элитный легион разлома (0 / %d)."), LegionKillsTarget);
+		// Stage 4: Elite Champions Vanguard
+		GS->ActTitle = TEXT("Этап IV — Чемпионы Разлома");
+		GS->ActDescription = FString::Printf(TEXT("Сокрушите Элитных Чемпионов и их легион (0 / %d)."), LegionKillsTarget);
 		GS->CurrentWavePhase = EAetheriaWavePhase::ClimaxSiege;
+		GS->SetSynergyBanner(TEXT("ЧЕМПИОНЫ РАЗЛОМА ВЫШЛИ НА АРЕНУ! Приготовьтесь к элитному бою!"));
+		PlayAnnouncerVoice(TEXT("/Game/ParagonMaleAnnouncer/Sounds/SoundWaves/MAnnouncer_Enemy_OrbPrimeEnabled_010"), 0.90f);
+
+		if (bCombatReleased && !LocDef.Mobs.IsEmpty())
+		{
+			int32 SwarmIdx = 0, BruiserIdx = 0, RangedIdx = 0;
+			for (int32 i = 0; i < LocDef.Mobs.Num(); ++i)
+			{
+				if (LocDef.Mobs[i].Kind == EAetheriaMobKind::Swarm) SwarmIdx = i;
+				else if (LocDef.Mobs[i].Kind == EAetheriaMobKind::Bruiser) BruiserIdx = i;
+				else if (LocDef.Mobs[i].Kind == EAetheriaMobKind::Ranged) RangedIdx = i;
+			}
+			const FVector EliteAnchor = ResolveGroundedStagePoint(GatePos + RouteDir * 420.0f, StartOrigin.Z);
+			QueueAmbush(EAetheriaAmbushKind::ObjectiveTrapCounter, EliteAnchor + RouteRight * 260.0f, 1, BruiserIdx, true, TEXT("ЭЛИТНЫЙ ЧЕМПИОН ПРИБЫЛ!"));
+			QueueAmbush(EAetheriaAmbushKind::ObjectiveTrapCounter, EliteAnchor - RouteRight * 260.0f, 1, BruiserIdx, true, TEXT("ЭЛИТНЫЙ ЧЕМПИОН ПРИБЫЛ!"));
+			QueueAmbush(EAetheriaAmbushKind::RiftBreach, EliteAnchor + RouteDir * 240.0f, 2, RangedIdx, false, TEXT(""));
+			QueueAmbush(EAetheriaAmbushKind::SubterraneanEruption, EliteAnchor, 3, SwarmIdx, false, TEXT(""));
+		}
 		break;
 	}
 	case 5:
 	{
-		GS->ActTitle = FString::Printf(TEXT("Акт V — Битва с Боссом: %s"), *LocDef.Boss.DisplayName);
-		GS->ActDescription = FString::Printf(TEXT("Победите хранителя локации: %s (%s)"), *LocDef.Boss.DisplayName, *LocDef.Subtitle);
+		// Stage 5: Boss Encounter (switches to BGM_Boss_Dread + ParagonMaleAnnouncer Epic callout)
+		const TCHAR* WorldBossHero = AetheriaWorldDirector::BossHeroForWorld(ActiveWorld);
+		GS->ActTitle = FString::Printf(TEXT("Этап V — Хранитель Мира: %s (%s)"), WorldBossHero, *LocDef.Boss.DisplayName);
+		GS->ActDescription = FString::Printf(TEXT("Сразите Хранителя: %s, чтобы открыть Портал Победы!"), WorldBossHero);
 		GS->CurrentWavePhase = EAetheriaWavePhase::ClimaxSiege;
+		PlayBiomeBGM(ActiveWorld, true);
+		PlayAnnouncerVoice(TEXT("/Game/ParagonMaleAnnouncer/Sounds/SoundWaves/MAnnouncer_Player_Epic_010"), 0.92f);
 		SpawnBoss(LocDef, Timing.BossHPScale);
 		break;
 	}
@@ -1451,8 +1709,10 @@ void AAetheriaGameMode::OnSimulationTick()
 			SpawnWaveAroundActiveObjective(LocDef, EAetheriaObjectiveKind::Beacon);
 			MobSpawnTimer = 4.5f;
 		}
-		if (CompletedCount >= 3)
+		if (CompletedCount >= GS->Objectives.Num() && GS->Objectives.Num() > 0)
 		{
+			SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Shockwave"),
+				GS->Objectives.Last().Location + FVector(0.0f, 0.0f, 15.0f), FRotator::ZeroRotator, FVector(2.2f), false);
 			SetAct(2);
 		}
 		break;
@@ -1485,6 +1745,7 @@ void AAetheriaGameMode::OnSimulationTick()
 			if (Obelisk.Progress >= 100.0f)
 			{
 				Obelisk.bCompleted = true;
+				SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Shockwave"), Obelisk.Location + FVector(0.0f, 0.0f, 20.0f), FRotator::ZeroRotator, FVector(3.0f), false);
 				UAetheriaMaterialLibrary::PlayGameSound2D(World, TEXT("SFX_Obelisk_Complete"), 0.92f);
 				SetAct(3);
 			}
@@ -1820,21 +2081,35 @@ void AAetheriaGameMode::SpawnBoss(const FAetheriaLocationDef& LocDef, float Boss
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
 
-	const FVector LookFwd(0.7071f, -0.7071f, 0.0f);
-	const FVector BossXY = AetheriaWorldDirector::BossArenaLocationForWorld(ActiveWorld);
-	const float BossX = BossXY.X;
-	const float BossY = BossXY.Y;
-	const float BossZ = UAetheriaBiomeDatabase::GroundZAt(this, GS->CurrentLocationIndex, FVector2D(BossX, BossY), 120.0f);
+	FVector BossSpot = AetheriaWorldDirector::BossArenaLocationForWorld(ActiveWorld);
+	// If any living player is far from the default boss marker, place the boss cleanly ahead along the approach route
+	for (TActorIterator<AAetheriaWizardCharacter> It(World); It; ++It)
+	{
+		if (It->bIsAlive)
+		{
+			if (FVector::Dist2D(It->GetActorLocation(), BossSpot) > 3200.0f)
+			{
+				const FVector Fwd = FVector(0.7071f, -0.7071f, 0.0f);
+				BossSpot = It->GetActorLocation() + Fwd * 1050.0f;
+			}
+			break;
+		}
+	}
+	const FVector GroundedBoss = ResolveGroundedStagePoint(BossSpot, BossSpot.Z);
+	const FVector SpawnLoc(GroundedBoss.X, GroundedBoss.Y, GroundedBoss.Z + 305.0f);
 
-	UAetheriaPackVFX::PlaySpawnTelegraph(this, EAetheriaMobKind::Boss, FVector(BossX, BossY, BossZ), false);
-	if (AAetheriaMobCharacter* Boss = World->SpawnActor<AAetheriaMobCharacter>(FVector(BossX, BossY, BossZ), FRotator::ZeroRotator, Params))
+	SpawnStageWorldVFX(TEXT("/Game/Portals/Rectangle/FirePortal/NS_FireRec"), GroundedBoss + FVector(0.0f, 0.0f, 120.0f), FRotator(0.0f, 45.0f, 0.0f), FVector(2.2f), false);
+	SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_Shockwave"), GroundedBoss + FVector(0.0f, 0.0f, 20.0f), FRotator::ZeroRotator, FVector(3.2f), false);
+	UAetheriaPackVFX::PlaySpawnTelegraph(this, EAetheriaMobKind::Boss, GroundedBoss, false);
+
+	if (AAetheriaMobCharacter* Boss = World->SpawnActor<AAetheriaMobCharacter>(SpawnLoc, FRotator::ZeroRotator, Params))
 	{
 		Boss->InitFromArchetype(LocDef.Boss, BossHPScale, 1.0f, GS->CurrentLocationIndex);
 		Boss->InitAmbushEmergence(EAetheriaAmbushKind::None, false);
 		ActiveBossMob = Boss;
 		GS->bBossSpawned = true;
 		GS->bBossDefeated = false;
-		GS->BossName = LocDef.Boss.DisplayName;
+		GS->BossName = FString::Printf(TEXT("%s — %s"), AetheriaWorldDirector::BossHeroForWorld(ActiveWorld), *LocDef.Boss.DisplayName);
 		GS->BossHP = Boss->HP;
 		GS->BossMaxHP = Boss->MaxHP;
 		GS->BossOrbs = Boss->BossOrbs;
@@ -1844,27 +2119,57 @@ void AAetheriaGameMode::SpawnBoss(const FAetheriaLocationDef& LocDef, float Boss
 
 void AAetheriaGameMode::SpawnPortalObjective()
 {
+	UWorld* World = GetWorld();
 	AAetheriaGameState* GS = GetGameState<AAetheriaGameState>();
 	if (!GS) return;
 
+	ClearStageWorldVFX();
+
 	GS->bPortalOpen = true;
-	GS->ActTitle = TEXT("Хранитель Повержен — Астральный Портал Открыт!");
-	GS->ActDescription = TEXT("Нажмите [Enter] или кнопку портала, чтобы перейти в следующую локацию.");
+	GS->ActTitle = TEXT("Хранитель Повержен — Портал Победы Открыт!");
+	GS->ActDescription = TEXT("Нажмите [Enter] или войдите в сияющий Портал, чтобы перейти в следующий мир.");
 	GS->ActProgress = 100.0f;
+	GS->SetSynergyBanner(TEXT("ПОБЕДА! Портал в следующий мир открыт!"));
+
+	FVector PortalAnchor = AetheriaWorldDirector::PlayerStartForWorld(World, ActiveWorld);
+	if (World)
+	{
+		for (TActorIterator<AAetheriaWizardCharacter> It(World); It; ++It)
+		{
+			if (It->bIsAlive)
+			{
+				PortalAnchor = It->GetActorLocation() + FVector(320.0f, -320.0f, 0.0f);
+				// Celebratory NS_Free_Spells_LevelUp burst on every living wizard
+				SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_LevelUp"),
+					It->GetActorLocation() - FVector(0.0f, 0.0f, 60.0f), FRotator::ZeroRotator, FVector(1.8f), false);
+			}
+		}
+	}
+	const FVector GroundPortal = ResolveGroundedStagePoint(PortalAnchor, PortalAnchor.Z);
 
 	GS->Objectives.Empty();
 	FAetheriaObjectiveInfo Portal;
 	Portal.ObjectiveId = 999;
 	Portal.Kind = EAetheriaObjectiveKind::Portal;
-	Portal.Label = TEXT("Астральные Врата");
-		const float PortalZ = UAetheriaBiomeDatabase::GroundZAt(this, GS->CurrentLocationIndex, FVector2D::ZeroVector);
-	Portal.Location = FVector(0.0f, 0.0f, PortalZ);
+	Portal.Label = TEXT("Портал Победы");
+	Portal.Location = GroundPortal;
 	Portal.RadiusUU = 550.0f;
 	Portal.bActive = true;
 	Portal.bCompleted = false;
 	GS->Objectives.Add(Portal);
 
-	UAetheriaMaterialLibrary::PlayGameSound2D(GetWorld(), TEXT("SFX_PortalOpen"), 0.90f);
+	if (!bVictoryPortalVFXTriggered)
+	{
+		bVictoryPortalVFXTriggered = true;
+		SpawnStageWorldVFX(TEXT("/Game/Portals/Rounded/WaterPortal/NS_WaterPortal"),
+			GroundPortal + FVector(0.0f, 0.0f, 140.0f), FRotator(0.0f, 45.0f, 0.0f), FVector(2.2f), true);
+		SpawnStageWorldVFX(TEXT("/Game/Free_Spells/VFX_Niagara/NS_Free_Spells_LevelUp"),
+			GroundPortal + FVector(0.0f, 0.0f, 20.0f), FRotator::ZeroRotator, FVector(2.4f), false);
+	}
+
+	UAetheriaMaterialLibrary::PlayGameSound2D(World, TEXT("SFX_PortalOpen"), 0.90f);
+	PlayAnnouncerVoice(TEXT("/Game/ParagonMaleAnnouncer/Sounds/SoundWaves/MAnnouncer_Spectator_Victory_010"), 0.92f);
+	PlayBiomeBGM(ActiveWorld, false);
 
 	if (UAetheriaSaveGame* Save = UAetheriaSaveGame::LoadOrCreateSave())
 	{
@@ -2072,7 +2377,15 @@ void AAetheriaGameMode::SpawnSiegeWave(const FAetheriaLocationDef& LocDef)
 {
 	if (!bCombatReleased) return;
 
-	SpawnProgressiveWave(LocDef, FVector::ZeroVector);
+	FVector Anchor = AetheriaWorldDirector::PlayerStartForWorld(GetWorld(), ActiveWorld);
+	if (AAetheriaGameState* GS = GetGameState<AAetheriaGameState>())
+	{
+		if (GS->Objectives.Num() > 0)
+		{
+			Anchor = GS->Objectives[0].Location;
+		}
+	}
+	SpawnProgressiveWave(LocDef, Anchor);
 }
 
 void AAetheriaGameMode::SpawnLegionWave(const FAetheriaLocationDef& LocDef)
@@ -2116,23 +2429,25 @@ int32 AAetheriaGameMode::SelectProgressiveArchetype(const FAetheriaLocationDef& 
 
 	if (LocIdx == 0 && Act == 1)
 	{
-		// Loc 0 Act 1:
-		// progress < 35% -> 100% Swarm (index 0);
-		// 35..75% -> Swarm + Ranged (index 2);
-		// >= 75% -> Swarm + Ranged + Bruiser (index 1).
+		// Loc 0 Act 1: mix Swarm (Buff_Black), Ranged (Buff_Blue), and Bruiser (Buff_Red)
+		// right from wave 1 so every encounter has distinct visual silhouettes & combat variety.
+		const float Roll = FMath::FRand();
 		if (ActProgress < 35.0f)
 		{
-			return SwarmIdx;
+			if (Roll < 0.60f) return SwarmIdx;
+			if (Roll < 0.85f) return RangedIdx;
+			return BruiserIdx;
 		}
 		else if (ActProgress < 75.0f)
 		{
-			return (FMath::FRand() < 0.65f) ? SwarmIdx : RangedIdx;
+			if (Roll < 0.50f) return SwarmIdx;
+			if (Roll < 0.80f) return RangedIdx;
+			return BruiserIdx;
 		}
 		else
 		{
-			const float Roll = FMath::FRand();
-			if (Roll < 0.45f) return SwarmIdx;
-			if (Roll < 0.75f) return RangedIdx;
+			if (Roll < 0.40f) return SwarmIdx;
+			if (Roll < 0.70f) return RangedIdx;
 			return BruiserIdx;
 		}
 	}
@@ -2226,11 +2541,16 @@ void AAetheriaGameMode::SpawnProgressiveWave(const FAetheriaLocationDef& LocDef,
 
 	float ThreatBudget = BaseThreat * (1.0f + 0.38f * (TotalMages - 1)) * MercyFactor;
 
-	// Spawn beyond the gate / out of the top-down camera (look dir +X,-Y), never in the intro plaza.
+	// Spawn ahead along the tactical arena corridor (grounded cleanly inside playable space)
 	const FVector LookFwd(0.7071f, -0.7071f, 0.0f);
 	const FVector LookRight(0.7071f, 0.7071f, 0.0f);
 	const float SectorSide = (FMath::RandBool() ? 1.0f : -1.0f);
-	const FVector RiftCenter = AnchorLocation + LookFwd * FMath::FRandRange(1100.0f, 1500.0f) + LookRight * SectorSide * FMath::FRandRange(80.0f, 320.0f);
+	const FVector EffectiveAnchor = AnchorLocation.IsNearlyZero()
+		? AetheriaWorldDirector::PlayerStartForWorld(World, ActiveWorld)
+		: AnchorLocation;
+	const FVector RiftCenter = ResolveGroundedStagePoint(
+		EffectiveAnchor + LookFwd * FMath::FRandRange(640.0f, 980.0f) + LookRight * SectorSide * FMath::FRandRange(90.0f, 340.0f),
+		EffectiveAnchor.Z);
 
 	auto CountKind = [World](EAetheriaMobKind K) -> int32
 	{
@@ -2395,9 +2715,13 @@ void AAetheriaGameMode::TickPendingAmbushes(float DeltaTime)
 			for (int32 k = 0; k < Pending.SpawnCount; ++k)
 			{
 				const float Angle = (2.0f * PI * k) / FMath::Max(1, Pending.SpawnCount) + FMath::FRandRange(-0.2f, 0.2f);
-				const float Dist = FMath::FRandRange(40.0f, 160.0f);
+				const float MinSpread = (Pending.SpawnCount > 1) ? FMath::Max(160.0f, Arch.CollisionRadiusUU * 2.4f) : 40.0f;
+				const float Dist = FMath::FRandRange(MinSpread, MinSpread + 160.0f);
 				FVector SpawnPos = Pending.Location + FVector(FMath::Cos(Angle) * Dist, FMath::Sin(Angle) * Dist, 0.0f);
-				SpawnPos.Z = UAetheriaBiomeDatabase::GroundZAt(this, GS->CurrentLocationIndex, FVector2D(SpawnPos.X, SpawnPos.Y)) + 100.0f;
+				const float ExpectedHalfH = (Arch.Kind == EAetheriaMobKind::Boss)
+					? 300.0f
+					: (Arch.CollisionRadiusUU * (Arch.Kind == EAetheriaMobKind::Bruiser ? 2.0f : 1.4f) * (Pending.bSpawnElite ? 1.22f : 1.0f));
+				SpawnPos.Z = UAetheriaBiomeDatabase::GroundZAt(this, GS->CurrentLocationIndex, FVector2D(SpawnPos.X, SpawnPos.Y)) + ExpectedHalfH + 16.0f;
 
 				if (AAetheriaMobCharacter* Mob = World->SpawnActor<AAetheriaMobCharacter>(SpawnPos, FRotator::ZeroRotator, Params))
 				{
@@ -2546,8 +2870,11 @@ void AAetheriaGameMode::StartMainMenu()
 	// Courtyard is baked into AetheriaWorld. Do not stream a dungeon under the menu.
 	if (UWorld* World = GetWorld())
 	{
+		FAetheriaLoadingScreenController::DismissWhenReady(World, /*bImmediate=*/true);
+		AetheriaWorldDirector::PatchBrokenMaterials(World, EAetheriaWorldId::Bastion);
 		AetheriaWorldDirector::ApplyLighting(World, EAetheriaWorldId::Bastion);
 		AetheriaDisableSkyCollision(World);
+		PlayBiomeBGM(EAetheriaWorldId::Bastion, false);
 		// ArtistMenu is a Void-lineage baked courtyard; do not destroy-and-respawn it at boot.
 		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 		{
@@ -2650,20 +2977,35 @@ void AAetheriaGameMode::StartWorld(EAetheriaWorldId WorldId, bool bFromMenu)
 	UWorld* World = GetWorld();
 	if (!World) return;
 
+	FAetheriaLoadingScreenController::EnsureInitialized();
+
 	const FString MapName = World->GetMapName();
 	if (!AetheriaWorldDirector::MapBelongsToWorld(MapName, WorldId))
 	{
 		GAetheriaSkipMainMenu = true;
 		GAetheriaPendingWorld = WorldId;
+		if (BiomeBGMComp && BiomeBGMComp->IsPlaying())
+		{
+			BiomeBGMComp->FadeOut(0.9f, 0.0f);
+		}
+		// Display persistent dark-fantasy loading screen overlay + arm IGameMoviePlayer BEFORE OpenLevel (ZERO black frames!)
+		FAetheriaLoadingScreenController::BeginWorldTravel(
+			World,
+			AetheriaWorldDirector::WorldDisplayName(WorldId),
+			AetheriaWorldDirector::WorldSubtitle(WorldId));
 		const TCHAR* Path = AetheriaWorldDirector::PersistentMapForWorld(WorldId);
 		UE_LOG(LogTemp, Display, TEXT("[Aetheria] OpenLevel baked world %s (from %s)"), Path, *MapName);
 		UGameplayStatics::OpenLevel(World, FName(Path));
 		return;
 	}
 
-	// Keep the 0.35s presentation timer: it no longer writes lights, and it
-	// retries HUD hide after AAetheriaHUD::BeginPlay creates MainOverlay.
+	// Destination world loaded: flush streaming, dress/light the world, snap hero to ground, then fade loading screen smoothly.
+	FAetheriaLoadingScreenController::UpdateProgress(0.76f, TEXT("Сборка архитектуры, света и порталов..."));
+	World->FlushLevelStreaming(EFlushLevelStreamingType::Full);
+
 	ApplyWorldPresentation();
+	FAetheriaLoadingScreenController::UpdateProgress(0.90f, TEXT("Размещение героев и пробуждение стражей..."));
+
 	const FVector Loc = AetheriaWorldDirector::PlayerStartForWorld(World, WorldId);
 	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 	{
@@ -2681,17 +3023,205 @@ void AAetheriaGameMode::StartWorld(EAetheriaWorldId WorldId, bool bFromMenu)
 			PlaceCharacterOnGround(Wiz, Loc, TEXT("StartWorld"));
 		}
 	}
+
+	// Sync world index & multi-stage ARPG progression objectives to this world's actual coordinates
+	if (AAetheriaGameState* GS = GetGameState<AAetheriaGameState>())
+	{
+		GS->CurrentLocationIndex = static_cast<int32>(WorldId);
+	}
+	SetAct(1);
+	PlayBiomeBGM(WorldId, WorldId == EAetheriaWorldId::BossSanctum);
+
+	FAetheriaLoadingScreenController::DismissWhenReady(World, /*bImmediate=*/false);
 	UE_LOG(LogTemp, Display, TEXT("[Aetheria] StartWorld %s at %s"), AetheriaWorldDirector::WorldDisplayName(WorldId), *Loc.ToCompactString());
 }
 
 void AAetheriaGameMode::OpenActiveGate()
 {
+	const bool bFirstRelease = !bCombatReleased;
 	bCombatReleased = true;
 	bInMainMenu = false;
 	if (ActiveGate.IsValid() && !ActiveGate->IsOpen())
 	{
 		ActiveGate->TryOpen();
 	}
+
+	// Stage 1 Entry Ambush: kick off immediate vanguard encounter + announcer welcome callout when combat starts
+	if (bFirstRelease && CurrentAct == 1 && !bStageEntryAmbushSpawned)
+	{
+		bStageEntryAmbushSpawned = true;
+		PlayAnnouncerVoice(TEXT("/Game/ParagonMaleAnnouncer/Sounds/SoundWaves/MAnnouncer_Player_Welcome_010"), 0.85f);
+		if (AAetheriaGameState* GS = GetGameState<AAetheriaGameState>())
+		{
+			const FAetheriaLocationDef LocDef = UAetheriaBiomeDatabase::GetLocation(GS->CurrentLocationIndex);
+			const FVector Anchor = (GS->Objectives.Num() > 0)
+				? GS->Objectives[0].Location
+				: AetheriaWorldDirector::PlayerStartForWorld(GetWorld(), ActiveWorld);
+			SpawnProgressiveWave(LocDef, Anchor);
+			MobSpawnTimer = 4.2f;
+		}
+	}
+}
+
+void AAetheriaGameMode::PlayBiomeBGM(EAetheriaWorldId WorldId, bool bBossEncounter)
+{
+	UWorld* World = GetWorld();
+	if (!World || IsRunningDedicatedServer()) return;
+
+	const TCHAR* TrackPath = TEXT("/Game/Audio/BGM_Sanctuary_Gothic.BGM_Sanctuary_Gothic");
+	if (bBossEncounter || WorldId == EAetheriaWorldId::BossSanctum)
+	{
+		TrackPath = TEXT("/Game/Audio/BGM_Boss_Dread.BGM_Boss_Dread");
+	}
+	else if (WorldId == EAetheriaWorldId::VoidRealm)
+	{
+		TrackPath = TEXT("/Game/Audio/BGM_Abyssal_Expedition.BGM_Abyssal_Expedition");
+	}
+
+	USoundBase* NextTrack = LoadObject<USoundBase>(nullptr, TrackPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!NextTrack)
+	{
+		return;
+	}
+
+	if (ActiveBGMTrack == NextTrack && BiomeBGMComp && BiomeBGMComp->IsPlaying())
+	{
+		return;
+	}
+
+	if (BiomeBGMComp)
+	{
+		BiomeBGMComp->bAutoDestroy = true;
+		BiomeBGMComp->FadeOut(1.5f, 0.0f);
+		BiomeBGMComp = nullptr;
+	}
+
+	if (USoundWave* SW = Cast<USoundWave>(NextTrack))
+	{
+		SW->bLooping = true;
+	}
+
+	const float TargetVol = FMath::Clamp(0.38f * UAetheriaMaterialLibrary::GetGlobalAudioVolume(), 0.04f, 0.60f);
+	BiomeBGMComp = UGameplayStatics::CreateSound2D(
+		World,
+		NextTrack,
+		TargetVol,
+		1.0f,
+		0.0f,
+		nullptr,
+		/*bPersistAcrossLevelTransition=*/false,
+		/*bAutoDestroy=*/false);
+	if (BiomeBGMComp)
+	{
+		BiomeBGMComp->bIsUISound = true;
+		BiomeBGMComp->bIgnoreForFlushing = true;
+		BiomeBGMComp->FadeIn(1.8f, TargetVol);
+		ActiveBGMTrack = NextTrack;
+		UE_LOG(LogTemp, Display, TEXT("[Aetheria] Crossfading Biome BGM -> %s (vol=%.2f)"), TrackPath, TargetVol);
+	}
+}
+
+void AAetheriaGameMode::PlayAnnouncerVoice(const TCHAR* SoundWavePkg, float Volume)
+{
+	UWorld* World = GetWorld();
+	if (!World || !SoundWavePkg || IsRunningDedicatedServer()) return;
+	const FString Obj = FString::Printf(TEXT("%s.%s"), SoundWavePkg, *FPackageName::GetShortName(SoundWavePkg));
+	if (USoundBase* Voice = LoadObject<USoundBase>(nullptr, *Obj, nullptr, LOAD_NoWarn | LOAD_Quiet))
+	{
+		const float EffectiveVol = FMath::Clamp(Volume * UAetheriaMaterialLibrary::GetGlobalAudioVolume(), 0.05f, 1.0f);
+		UGameplayStatics::PlaySound2D(World, Voice, EffectiveVol);
+	}
+}
+
+void AAetheriaGameMode::SpawnStageWorldVFX(const TCHAR* NiagaraPkg, const FVector& Loc, const FRotator& Rot, const FVector& Scale, bool bPersistentStageTag)
+{
+	UWorld* World = GetWorld();
+	if (!World || !NiagaraPkg) return;
+	const FString Obj = FString::Printf(TEXT("%s.%s"), NiagaraPkg, *FPackageName::GetShortName(NiagaraPkg));
+	UNiagaraSystem* Sys = LoadObject<UNiagaraSystem>(nullptr, *Obj, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Sys) return;
+
+	if (!bPersistentStageTag)
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, Sys, Loc, Rot, Scale, true, true, ENCPoolMethod::None, true);
+		return;
+	}
+
+	FActorSpawnParameters Sp;
+	Sp.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	if (APointLight* Anchor = World->SpawnActor<APointLight>(Loc, Rot, Sp))
+	{
+		Anchor->Tags.Add(FName(TEXT("AetheriaStageVFX")));
+		if (UPointLightComponent* PL = Cast<UPointLightComponent>(Anchor->GetLightComponent()))
+		{
+			PL->SetMobility(EComponentMobility::Movable);
+			PL->SetIntensityUnits(ELightUnits::Candelas);
+			PL->SetLightColor(FLinearColor(0.55f, 0.72f, 1.0f));
+			PL->SetIntensity(24.0f);
+			PL->SetAttenuationRadius(1100.0f);
+			PL->SetCastShadows(false);
+			PL->SetSpecularScale(0.18f);
+		}
+		if (UNiagaraComponent* NC = NewObject<UNiagaraComponent>(Anchor))
+		{
+			NC->SetAsset(Sys);
+			NC->SetupAttachment(Anchor->GetRootComponent());
+			NC->SetRelativeLocation(FVector::ZeroVector);
+			NC->SetRelativeRotation(FRotator::ZeroRotator);
+			NC->SetRelativeScale3D(Scale);
+			NC->bAutoActivate = true;
+			NC->RegisterComponent();
+			NC->Activate(true);
+		}
+	}
+}
+
+void AAetheriaGameMode::ClearStageWorldVFX()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+	TArray<AActor*> ToDestroy;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (It->ActorHasTag(FName(TEXT("AetheriaStageVFX"))))
+		{
+			ToDestroy.Add(*It);
+		}
+	}
+	for (AActor* A : ToDestroy)
+	{
+		A->Destroy();
+	}
+}
+
+FVector AAetheriaGameMode::ResolveGroundedStagePoint(const FVector& DesiredXY, float DefaultZ) const
+{
+	UWorld* World = GetWorld();
+	FVector Result(DesiredXY.X, DesiredXY.Y, DefaultZ);
+	if (!World) return Result;
+
+	FCollisionQueryParams Q(SCENE_QUERY_STAT(AetheriaStageGround), false);
+	for (TActorIterator<APawn> It(World); It; ++It)
+	{
+		Q.AddIgnoredActor(*It);
+	}
+	FHitResult Hit;
+	if (World->SweepSingleByChannel(
+		Hit,
+		FVector(DesiredXY.X, DesiredXY.Y, DefaultZ + 480.0f),
+		FVector(DesiredXY.X, DesiredXY.Y, DefaultZ - 2600.0f),
+		FQuat::Identity,
+		ECC_Pawn,
+		FCollisionShape::MakeSphere(24.0f),
+		Q))
+	{
+		if (Hit.ImpactNormal.Z >= 0.7f && !Hit.bStartPenetrating)
+		{
+			Result.Z = Hit.ImpactPoint.Z;
+			return Result;
+		}
+	}
+	return Result;
 }
 
 void AAetheriaGameMode::ApplyWorldPresentation()

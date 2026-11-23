@@ -263,6 +263,9 @@ private:
 	FVector MeteorRollLocation = FVector::ZeroVector;
 	FQuat MeteorSpinQuat = FQuat::Identity;
 	float NextFurrowDist = 0.0f;
+	float NextFireTrailVfxDist = 0.0f;
+	float PlungeTrailVfxCooldown = 0.0f;
+	int32 FireTrailVfxStep = 0;
 	TArray<FVector> MeteorFurrowPoints;
 
 	// Black Hole matter & landscape absorption + Meteor ballistic shrapnel

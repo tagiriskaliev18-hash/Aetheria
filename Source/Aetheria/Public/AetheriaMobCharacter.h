@@ -129,6 +129,7 @@ public:
 
 	void UpdateVisualSilhouette();
 	void PlayPresentationAction(uint8 Action);
+	bool IsDying() const { return bDying; }
 	bool bUsingSkeletalPresentation = false;
 	void UpdateMaterials();
 
@@ -236,6 +237,8 @@ private:
 	float WalkPhase = 0.0f;
 	float AttackAnimTimer = 0.0f;
 	float HitFlashTimer = 0.0f;
+	float HitReactCooldown = 0.0f;
+	int32 MeleeSwingIndex = 0;
 	float BaseMeshZOffset = -72.0f;
 	FVector BaseMeshScale = FVector(1.0f);
 	FRotator BaseMeshRotation = FRotator::ZeroRotator;
@@ -248,6 +251,9 @@ private:
 
 	UPROPERTY(Transient)
 	UMaterialInstanceDynamic* DynamicBodyMaterial = nullptr;
+
+	UPROPERTY(Transient)
+	UMaterialInstanceDynamic* SkeletalHitFlashOverlay = nullptr;
 
 	TWeakObjectPtr<AActor> LastInstigator;
 

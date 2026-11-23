@@ -61,6 +61,9 @@ public:
 	static UMaterialInterface* GetEmissiveCoreMaterial(UObject* Outer = nullptr);
 
 	UFUNCTION(BlueprintPure, Category = "Aetheria|Materials")
+	static UMaterialInterface* GetMobRimOverlayMaterial(UObject* Outer = nullptr);
+
+	UFUNCTION(BlueprintPure, Category = "Aetheria|Materials")
 	static UMaterialInterface* GetFireballMaterial(UObject* Outer = nullptr);
 
 	UFUNCTION(BlueprintPure, Category = "Aetheria|Materials")
@@ -125,6 +128,7 @@ public:
 		float DefaultUVTiling,
 		float DefaultMetallic);
 	static class UMaterial* BuildEmissiveCoreShaderGraph(UPackage* Package, const FString& Name);
+	static class UMaterial* BuildMobRimOverlayShaderGraph(UPackage* Package, const FString& Name);
 	static class UMaterial* BuildFireballShaderGraph(UPackage* Package, const FString& Name);
 	static class UMaterial* BuildBlackHoleHorizonShaderGraph(UPackage* Package, const FString& Name);
 	static class UMaterial* BuildAccretionDiskShaderGraph(UPackage* Package, const FString& Name);

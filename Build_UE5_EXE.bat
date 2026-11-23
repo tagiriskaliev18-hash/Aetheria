@@ -81,8 +81,8 @@ call "%UE_ROOT%\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun ^
     -noP4 ^
     -platform=Win64 ^
     -clientconfig=Development ^
-    -cook ^ ^
-    -map=/Engine/Maps/Entry+/Game/Maps/AetheriaWorlds/ArtistMenu+/Game/Maps/AetheriaWorlds/MenuCourtyard+/Game/Maps/AetheriaWorlds/World_Bastion+/Game/Maps/AetheriaWorlds/World_Ruins+/Game/Maps/AetheriaWorlds/World_Sanctum+/Game/Maps/AetheriaWorlds/World_Void+/Game/Maps/AetheriaWorlds/World_VoidShell+/Game/Maps/AetheriaWorld ^
+    -cook ^
+    -map=/Engine/Maps/Entry+/Game/Maps/AetheriaWorlds/ArtistMenu+/Game/Maps/AetheriaWorlds/MenuCourtyard+/Game/Maps/AetheriaWorlds/World_Bastion+/Game/Maps/AetheriaWorlds/World_Ruins+/Game/Maps/AetheriaWorlds/World_Sanctum+/Game/Maps/AetheriaWorlds/World_Void+/Game/Maps/AetheriaWorlds/World_VoidShell+/Game/Maps/AetheriaWorld+/Game/Maps/AetheriaLayouts/Layout_AgoraPlaza+/Game/Maps/AetheriaLayouts/Layout_GothicCourtyard+/Game/Maps/AetheriaLayouts/Layout_MedievalDungeon+/Game/Maps/AetheriaLayouts/Layout_TreasureSanctum ^
     -build ^
     -stage ^
     -pak ^

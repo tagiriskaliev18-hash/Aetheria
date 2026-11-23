@@ -272,6 +272,7 @@ public:
 	void FaceWorldPoint(const FVector& TargetPoint);
 	void SetCursorAimPoint(const FVector& WorldPoint);
 	void PlayPresentationAction(uint8 Action);
+	void ResetPresentationDeath();
 	bool bUsingSkeletalPresentation = false;
 	void SpawnAfterimageGhost(const FVector& WorldPos, const FRotator& WorldRot, float AlphaScale);
 
