@@ -1,0 +1,734 @@
+[
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_ArenaHero.fbx",
+    "DestinationPath": "/Game/Meshes/SKM_ArenaHero",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_ArenaHero.glb",
+    "DestinationPath": "/Game/Meshes/SKM_ArenaHero",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_CyberFrog.fbx",
+    "DestinationPath": "/Game/Meshes/SKM_CyberFrog",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_CyberFrog.glb",
+    "DestinationPath": "/Game/Meshes/SKM_CyberFrog",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Dragoon.fbx",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Dragoon",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Dragoon.glb",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Dragoon",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Striker.fbx",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Striker",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Striker.glb",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Striker",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Tactician.fbx",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Tactician",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Tactician.glb",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Tactician",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Vanguard.fbx",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Vanguard",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Vanguard.glb",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Vanguard",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Vincit.fbx",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Vincit",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SKM_Hero_Vincit.glb",
+    "DestinationPath": "/Game/Meshes/SKM_Hero_Vincit",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Arena_CourtFloor.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Arena_CourtFloor",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Arena_CourtFloor.glb",
+    "DestinationPath": "/Game/Meshes/SM_Arena_CourtFloor",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_BioFrog_LotusPillar.fbx",
+    "DestinationPath": "/Game/Meshes/SM_BioFrog_LotusPillar",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_BioFrog_LotusPillar.glb",
+    "DestinationPath": "/Game/Meshes/SM_BioFrog_LotusPillar",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Bridge_StairRamp.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Bridge_StairRamp",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Bridge_StairRamp.glb",
+    "DestinationPath": "/Game/Meshes/SM_Bridge_StairRamp",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_ChicaneBarrier.fbx",
+    "DestinationPath": "/Game/Meshes/SM_ChicaneBarrier",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_ChicaneBarrier.glb",
+    "DestinationPath": "/Game/Meshes/SM_ChicaneBarrier",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_CoreCrystal.fbx",
+    "DestinationPath": "/Game/Meshes/SM_CoreCrystal",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_CoreCrystal.glb",
+    "DestinationPath": "/Game/Meshes/SM_CoreCrystal",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Earth_Spike_Cluster.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Earth_Spike_Cluster",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Earth_Spike_Cluster.glb",
+    "DestinationPath": "/Game/Meshes/SM_Earth_Spike_Cluster",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Earth_Spike_Single.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Earth_Spike_Single",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Earth_Spike_Single.glb",
+    "DestinationPath": "/Game/Meshes/SM_Earth_Spike_Single",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_ClawGauntlets.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_ClawGauntlets",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_ClawGauntlets.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_ClawGauntlets",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_CyberKatana.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_CyberKatana",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_CyberKatana.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_CyberKatana",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_HeavyRevolver.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_HeavyRevolver",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_HeavyRevolver.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_HeavyRevolver",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_NeedleSniper.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_NeedleSniper",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_NeedleSniper.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_NeedleSniper",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_PlasmaLauncher.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_PlasmaLauncher",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_PlasmaLauncher.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_PlasmaLauncher",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_PulseRifle.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_PulseRifle",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_PulseRifle.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_PulseRifle",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_ScatterShotgun.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_ScatterShotgun",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_ScatterShotgun.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_ScatterShotgun",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_StylizedBolter.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_StylizedBolter",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_StylizedBolter.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_StylizedBolter",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_ThunderHammer.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_ThunderHammer",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_ThunderHammer.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_ThunderHammer",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_VincitRevolver.fbx",
+    "DestinationPath": "/Game/Meshes/SM_FP_VincitRevolver",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_FP_VincitRevolver.glb",
+    "DestinationPath": "/Game/Meshes/SM_FP_VincitRevolver",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_GroundCrack_Rubble.fbx",
+    "DestinationPath": "/Game/Meshes/SM_GroundCrack_Rubble",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_GroundCrack_Rubble.glb",
+    "DestinationPath": "/Game/Meshes/SM_GroundCrack_Rubble",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_HealthPack_Mega.fbx",
+    "DestinationPath": "/Game/Meshes/SM_HealthPack_Mega",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_HealthPack_Mega.glb",
+    "DestinationPath": "/Game/Meshes/SM_HealthPack_Mega",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_HealthPack_Small.fbx",
+    "DestinationPath": "/Game/Meshes/SM_HealthPack_Small",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_HealthPack_Small.glb",
+    "DestinationPath": "/Game/Meshes/SM_HealthPack_Small",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_HeavyRevolver.fbx",
+    "DestinationPath": "/Game/Meshes/SM_HeavyRevolver",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_HeavyRevolver.glb",
+    "DestinationPath": "/Game/Meshes/SM_HeavyRevolver",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_JumpPad.fbx",
+    "DestinationPath": "/Game/Meshes/SM_JumpPad",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_JumpPad.glb",
+    "DestinationPath": "/Game/Meshes/SM_JumpPad",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_LilyPadPlatform.fbx",
+    "DestinationPath": "/Game/Meshes/SM_LilyPadPlatform",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_LilyPadPlatform.glb",
+    "DestinationPath": "/Game/Meshes/SM_LilyPadPlatform",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_NeedleSniper.fbx",
+    "DestinationPath": "/Game/Meshes/SM_NeedleSniper",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_NeedleSniper.glb",
+    "DestinationPath": "/Game/Meshes/SM_NeedleSniper",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Orbital_AntiGravColumn.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Orbital_AntiGravColumn",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Orbital_AntiGravColumn.glb",
+    "DestinationPath": "/Game/Meshes/SM_Orbital_AntiGravColumn",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Orbital_CatwalkSegment.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Orbital_CatwalkSegment",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Orbital_CatwalkSegment.glb",
+    "DestinationPath": "/Game/Meshes/SM_Orbital_CatwalkSegment",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Overwatch_Payload.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Overwatch_Payload",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Overwatch_Payload.glb",
+    "DestinationPath": "/Game/Meshes/SM_Overwatch_Payload",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_PlasmaLauncher.fbx",
+    "DestinationPath": "/Game/Meshes/SM_PlasmaLauncher",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_PlasmaLauncher.glb",
+    "DestinationPath": "/Game/Meshes/SM_PlasmaLauncher",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_PulseRifle.fbx",
+    "DestinationPath": "/Game/Meshes/SM_PulseRifle",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_PulseRifle.glb",
+    "DestinationPath": "/Game/Meshes/SM_PulseRifle",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Reinhardt_Barrier.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Reinhardt_Barrier",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Reinhardt_Barrier.glb",
+    "DestinationPath": "/Game/Meshes/SM_Reinhardt_Barrier",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_RubyObelisk.fbx",
+    "DestinationPath": "/Game/Meshes/SM_RubyObelisk",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_RubyObelisk.glb",
+    "DestinationPath": "/Game/Meshes/SM_RubyObelisk",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_ScatterShotgun.fbx",
+    "DestinationPath": "/Game/Meshes/SM_ScatterShotgun",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_ScatterShotgun.glb",
+    "DestinationPath": "/Game/Meshes/SM_ScatterShotgun",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Sector_CornerPylon.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Sector_CornerPylon",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Sector_CornerPylon.glb",
+    "DestinationPath": "/Game/Meshes/SM_Sector_CornerPylon",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_SiphonAltar.fbx",
+    "DestinationPath": "/Game/Meshes/SM_SiphonAltar",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_SiphonAltar.glb",
+    "DestinationPath": "/Game/Meshes/SM_SiphonAltar",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_SkyBridge_Architectural.fbx",
+    "DestinationPath": "/Game/Meshes/SM_SkyBridge_Architectural",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_SkyBridge_Architectural.glb",
+    "DestinationPath": "/Game/Meshes/SM_SkyBridge_Architectural",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Spawn_BastionGate.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Spawn_BastionGate",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Spawn_BastionGate.glb",
+    "DestinationPath": "/Game/Meshes/SM_Spawn_BastionGate",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Stadium_CornerTower.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Stadium_CornerTower",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Stadium_CornerTower.glb",
+    "DestinationPath": "/Game/Meshes/SM_Stadium_CornerTower",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Stadium_GrandstandWall.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Stadium_GrandstandWall",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Stadium_GrandstandWall.glb",
+    "DestinationPath": "/Game/Meshes/SM_Stadium_GrandstandWall",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Stadium_SkyRing.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Stadium_SkyRing",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Stadium_SkyRing.glb",
+    "DestinationPath": "/Game/Meshes/SM_Stadium_SkyRing",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_TitanCoverBlock.fbx",
+    "DestinationPath": "/Game/Meshes/SM_TitanCoverBlock",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_TitanCoverBlock.glb",
+    "DestinationPath": "/Game/Meshes/SM_TitanCoverBlock",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Vista_CityTower.fbx",
+    "DestinationPath": "/Game/Meshes/SM_Vista_CityTower",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_Vista_CityTower.glb",
+    "DestinationPath": "/Game/Meshes/SM_Vista_CityTower",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_ClawGauntlets.fbx",
+    "DestinationPath": "/Game/Meshes/SM_WP_ClawGauntlets",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_ClawGauntlets.glb",
+    "DestinationPath": "/Game/Meshes/SM_WP_ClawGauntlets",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_CyberKatana.fbx",
+    "DestinationPath": "/Game/Meshes/SM_WP_CyberKatana",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_CyberKatana.glb",
+    "DestinationPath": "/Game/Meshes/SM_WP_CyberKatana",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_StylizedBolter.fbx",
+    "DestinationPath": "/Game/Meshes/SM_WP_StylizedBolter",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_StylizedBolter.glb",
+    "DestinationPath": "/Game/Meshes/SM_WP_StylizedBolter",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_ThunderHammer.fbx",
+    "DestinationPath": "/Game/Meshes/SM_WP_ThunderHammer",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_ThunderHammer.glb",
+    "DestinationPath": "/Game/Meshes/SM_WP_ThunderHammer",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_VincitRevolver.fbx",
+    "DestinationPath": "/Game/Meshes/SM_WP_VincitRevolver",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\SM_WP_VincitRevolver.glb",
+    "DestinationPath": "/Game/Meshes/SM_WP_VincitRevolver",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\hero_archmage.glb",
+    "DestinationPath": "/Game/Meshes/hero_archmage",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\mob_boss_archon.glb",
+    "DestinationPath": "/Game/Meshes/mob_boss_archon",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\mob_bruiser_juggernaut.glb",
+    "DestinationPath": "/Game/Meshes/mob_bruiser_juggernaut",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\mob_ranged_lich.glb",
+    "DestinationPath": "/Game/Meshes/mob_ranged_lich",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\mob_swarm_reaper.glb",
+    "DestinationPath": "/Game/Meshes/mob_swarm_reaper",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_arch.glb",
+    "DestinationPath": "/Game/Meshes/prop_arch",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_barrel_intact.glb",
+    "DestinationPath": "/Game/Meshes/prop_barrel_intact",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_boulder.glb",
+    "DestinationPath": "/Game/Meshes/prop_boulder",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_brazier.glb",
+    "DestinationPath": "/Game/Meshes/prop_brazier",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_chest.glb",
+    "DestinationPath": "/Game/Meshes/prop_chest",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_iron_gate.glb",
+    "DestinationPath": "/Game/Meshes/prop_iron_gate",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_pillar.glb",
+    "DestinationPath": "/Game/Meshes/prop_pillar",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_shrine_altar.glb",
+    "DestinationPath": "/Game/Meshes/prop_shrine_altar",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_statue.glb",
+    "DestinationPath": "/Game/Meshes/prop_statue",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_urn_intact.glb",
+    "DestinationPath": "/Game/Meshes/prop_urn_intact",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  },
+  {
+    "SourceFile": "C:\\Users\\tagir\\OneDrive\\Desktop\\Aetheria\\RawAssets\\Models\\prop_urn_shattered.glb",
+    "DestinationPath": "/Game/Meshes/prop_urn_shattered",
+    "bNaniteEnabled": true,
+    "bGenerateLightmapUVs": true
+  }
+]

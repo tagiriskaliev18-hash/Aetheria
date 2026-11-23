@@ -1,0 +1,168 @@
+{
+  "hero_archmage": {
+    "source_glb": "GodotAetheria/assets/models/hero_archmage.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_HeroArchmage",
+    "ue5_skeleton_path": "/Game/Skeletons/SK_HeroArchmage",
+    "textures": {
+      "albedo": "hero_archmage_char_dark_cloth_albedo.png",
+      "normal": "hero_archmage_char_dark_cloth_normal.png",
+      "roughness": "hero_archmage_char_dark_cloth_roughness.png"
+    }
+  },
+  "enemy_bruiser": {
+    "source_glb": "GodotAetheria/assets/models/mob_bruiser_juggernaut.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_EnemyBruiser",
+    "textures": {
+      "albedo": "mob_bruiser_juggernaut_char_dark_cloth_albedo.png",
+      "normal": "mob_bruiser_juggernaut_char_dark_cloth_normal.png",
+      "roughness": "mob_bruiser_juggernaut_char_dark_cloth_roughness.png"
+    }
+  },
+  "mob_bruiser_juggernaut": {
+    "source_glb": "GodotAetheria/assets/models/mob_bruiser_juggernaut.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_EnemyBruiser",
+    "textures": {
+      "albedo": "mob_bruiser_juggernaut_char_dark_cloth_albedo.png",
+      "normal": "mob_bruiser_juggernaut_char_dark_cloth_normal.png",
+      "roughness": "mob_bruiser_juggernaut_char_dark_cloth_roughness.png"
+    }
+  },
+  "enemy_swarm": {
+    "source_glb": "GodotAetheria/assets/models/mob_swarm_reaper.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_EnemySwarm",
+    "textures": {
+      "albedo": "mob_swarm_reaper_char_aged_bone_albedo.png",
+      "normal": "mob_swarm_reaper_char_aged_bone_normal.png",
+      "roughness": "mob_swarm_reaper_char_aged_bone_roughness.png"
+    }
+  },
+  "mob_swarm_reaper": {
+    "source_glb": "GodotAetheria/assets/models/mob_swarm_reaper.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_EnemySwarm",
+    "textures": {
+      "albedo": "mob_swarm_reaper_char_aged_bone_albedo.png",
+      "normal": "mob_swarm_reaper_char_aged_bone_normal.png",
+      "roughness": "mob_swarm_reaper_char_aged_bone_roughness.png"
+    }
+  },
+  "enemy_ranged": {
+    "source_glb": "GodotAetheria/assets/models/mob_ranged_lich.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_EnemyRanged",
+    "textures": {
+      "albedo": "mob_ranged_lich_char_aged_bone_albedo.png",
+      "normal": "mob_ranged_lich_char_aged_bone_normal.png",
+      "roughness": "mob_ranged_lich_char_aged_bone_roughness.png"
+    }
+  },
+  "mob_ranged_lich": {
+    "source_glb": "GodotAetheria/assets/models/mob_ranged_lich.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_EnemyRanged",
+    "textures": {
+      "albedo": "mob_ranged_lich_char_aged_bone_albedo.png",
+      "normal": "mob_ranged_lich_char_aged_bone_normal.png",
+      "roughness": "mob_ranged_lich_char_aged_bone_roughness.png"
+    }
+  },
+  "enemy_boss_archon": {
+    "source_glb": "GodotAetheria/assets/models/mob_boss_archon.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_BossArchon",
+    "textures": {
+      "albedo": "mob_boss_archon_char_carapace_albedo.png",
+      "normal": "mob_boss_archon_char_carapace_normal.png",
+      "roughness": "mob_boss_archon_char_carapace_roughness.png"
+    }
+  },
+  "prop_barrel": {
+    "source_glb": "GodotAetheria/assets/models/prop_barrel_intact.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropBarrel",
+    "textures": {}
+  },
+  "prop_barrel_intact": {
+    "source_glb": "GodotAetheria/assets/models/prop_barrel_intact.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropBarrel",
+    "textures": {}
+  },
+  "prop_column": {
+    "source_glb": "GodotAetheria/assets/models/prop_pillar.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropColumn",
+    "textures": {
+      "albedo": "prop_pillar_cathedral_brick_albedo.png",
+      "normal": "prop_pillar_cathedral_brick_normal.png",
+      "roughness": "prop_pillar_cathedral_brick_roughness.png"
+    }
+  },
+  "prop_pillar": {
+    "source_glb": "GodotAetheria/assets/models/prop_pillar.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropColumn",
+    "textures": {
+      "albedo": "prop_pillar_cathedral_brick_albedo.png",
+      "normal": "prop_pillar_cathedral_brick_normal.png",
+      "roughness": "prop_pillar_cathedral_brick_roughness.png"
+    }
+  },
+  "prop_shrine_altar": {
+    "source_glb": "GodotAetheria/assets/models/prop_shrine_altar.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropShrineAltar",
+    "textures": {
+      "albedo": "prop_shrine_altar_cathedral_brick_albedo.png",
+      "normal": "prop_shrine_altar_cathedral_brick_normal.png",
+      "roughness": "prop_shrine_altar_cathedral_brick_roughness.png"
+    }
+  },
+  "prop_statue": {
+    "source_glb": "GodotAetheria/assets/models/prop_statue.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropStatue",
+    "textures": {}
+  },
+  "prop_urn_intact": {
+    "source_glb": "GodotAetheria/assets/models/prop_urn_intact.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropUrnIntact",
+    "textures": {
+      "albedo": "prop_urn_intact_forged_iron_albedo.png",
+      "normal": "prop_urn_intact_forged_iron_normal.png",
+      "roughness": "prop_urn_intact_forged_iron_roughness.png"
+    }
+  },
+  "prop_urn_shattered": {
+    "source_glb": "GodotAetheria/assets/models/prop_urn_shattered.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropUrnShattered",
+    "textures": {
+      "albedo": "prop_urn_shattered_forged_iron_albedo.png",
+      "normal": "prop_urn_shattered_forged_iron_normal.png",
+      "roughness": "prop_urn_shattered_forged_iron_roughness.png"
+    }
+  },
+  "prop_arch": {
+    "source_glb": "GodotAetheria/assets/models/prop_arch.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropArch",
+    "textures": {
+      "albedo": "prop_arch_cathedral_brick_albedo.png",
+      "normal": "prop_arch_cathedral_brick_normal.png",
+      "roughness": "prop_arch_cathedral_brick_roughness.png"
+    }
+  },
+  "prop_brazier": {
+    "source_glb": "GodotAetheria/assets/models/prop_brazier.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropBrazier",
+    "textures": {
+      "albedo": "prop_brazier_forged_iron_albedo.png",
+      "normal": "prop_brazier_forged_iron_normal.png",
+      "roughness": "prop_brazier_forged_iron_roughness.png"
+    }
+  },
+  "prop_boulder": {
+    "source_glb": "GodotAetheria/assets/models/prop_boulder.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropBoulder",
+    "textures": {}
+  },
+  "prop_chest": {
+    "source_glb": "GodotAetheria/assets/models/prop_chest.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropChest",
+    "textures": {}
+  },
+  "prop_iron_gate": {
+    "source_glb": "GodotAetheria/assets/models/prop_iron_gate.glb",
+    "ue5_mesh_path": "/Game/Meshes/SM_PropIronGate",
+    "textures": {}
+  }
+}

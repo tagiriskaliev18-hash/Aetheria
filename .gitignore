@@ -1,0 +1,38 @@
+# Unreal Engine 5 artifacts & local binaries
+*.exe
+*.bak*
+*.sav
+*.zip
+*.7z
+*.pdb
+*.obj
+*.lib
+*.dll
+*.exp
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+.vs/
+.vscode/
+__pycache__/
+*.pyc
+build/
+dist/
+_backup_*/
+GodotAetheria/.godot/
+.agents/
+
+
+# Large raw binaries and caches excluded from grokbot/ue-port checkpoint
+# (GodotAetheria/assets remains the source of truth for GLBs/PBR textures)
+Scripts/_cache/
+RawAssets/Models/
+RawAssets/Textures/
+*.sln
+*.slnx
+map_build.log
+sky_build.log
+smoke.log
+Scripts/_secrets/
+Scripts/_reviews/

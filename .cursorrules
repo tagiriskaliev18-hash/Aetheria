@@ -1,0 +1,39 @@
+# .cursorrules — AETHERIA // UNREAL ENGINE 5.8.4 AAA ARPG DIRECTIVE
+# Target Benchmark: Black Myth: Wukong Graphics, Diablo IV Grimdark Atmosphere, Dota 2 Invoker Spellcraft
+
+[Project Context]
+- Engine: Unreal Engine 5.8.4
+- Engine Path: C:\Users\tagir\Epic Games\UE_5.8
+- Toolchain: MSVC VS2022 14.44.35207, Windows 10 SDK 10.0.22621.0
+- Bundled .NET 10: C:\Users\tagir\Epic Games\UE_5.8\Engine\Binaries\ThirdParty\DotNet\10.0\win-x64\dotnet.exe
+- Project Path: C:\Users\tagir\OneDrive\Desktop\Aetheria
+- Project File: Aetheria.uproject
+
+[Critical Requirements & Architecture]
+1. NO FALLBACKS TO GODOT:
+   All legacy Godot builds and folders have been archived. Under NO circumstances generate, suggest, or launch Godot.
+   The project is strictly native C++ and Slate on Unreal Engine 5.8.4.
+
+2. Visual Fidelity Standards (Black Myth: Wukong Grade):
+   - Nanite Geometry: Virtualized micro-polygon geometry enabled on all static meshes.
+   - Lumen Global Illumination: Software/Hardware Lumen Ray Tracing active (`r.Lumen.DiffuseIndirect.Allow=1`, `r.Lumen.Reflections.Allow=1`).
+   - Virtual Shadow Maps (VSM): Ultra-sharp contact shadows (`r.Shadow.Virtual.ResolutionLodBiasDirectional=-2.0`, `r.ContactShadows=1`, `r.CapsuleShadows=1`).
+   - Cinematic Post-Process: Volumetric Fog (GridPixelSize=4), Tonemapper Sharpen (0.65-0.75), Chromatic Aberration, Bloom Quality 5.
+
+3. Gameplay & Controls (Diablo IV + Dota 2 Invoker):
+   - Camera: Isometric top-down (Pitch -55 deg, Distance 1800-2200).
+   - Locomotion: Left click moves character with smooth rotation interpolation (`bOrientRotationToMovement=true`). Character must NEVER slide sideways.
+   - Combat Input: Right click on an enemy auto-attacks like Dota 2 (Continuous auto-attack range checks). Left click is strictly move/navigate or target.
+   - Elemental Triad Spellcraft:
+     * Q = Ignis (Fire / DPS / Burn)
+     * W = Tempest (Lightning / Shock / Chain)
+     * E = Graviton (Void / Crowd Control / Gravity)
+     * R = Invoke (Synthesizes 3 active orbs into 1 of 16 combination spells)
+     * D / F = Cast Active Invoked Spells
+     * Space = Chrono-Dash / Evade
+
+4. Build & Compile Protocol:
+   - Always compile using the official UE 5.8 batch file:
+     & "C:\Users\tagir\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat" AetheriaEditor Win64 Development -Project="C:\Users\tagir\OneDrive\Desktop\Aetheria\Aetheria.uproject" -WaitMutex
+   - If Live Coding lock occurs, ensure UnrealEditor.exe is not holding the build mutex.
+   - Standalone Packaging: Run `Build_UE5_EXE.bat` or `RunUAT.bat BuildCookRun -project=Aetheria.uproject -platform=Win64 -clientconfig=Development -cook -stage -pak -package`.
